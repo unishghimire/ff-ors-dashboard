@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { listEntities, createEntity, updateEntity, callFunction } from '../api/client'
-import { Plus, Plug, TestTube, Check, X, Activity } from 'lucide-react'
+import { listEntities, createEntity, updateEntity, testApiDestination } from '../api/client'
+import { Plus, Plug, TestTube, Check, X } from 'lucide-react'
 
 export default function ApiDestinations() {
   const [destinations, setDestinations] = useState([])
@@ -26,8 +26,9 @@ export default function ApiDestinations() {
 
   async function testDest(id) {
     setTestResults(prev => ({ ...prev, [id]: { loading: true } }))
-    const result = await callFunction('testApiDestination', { destination_id: id }).catch(e => ({ success: false, error: e.message }))
+    const result = await testApiDestination(id).catch(e => ({ success: false, error: e.message }))
     setTestResults(prev => ({ ...prev, [id]: result }))
+    fetchDests()
   }
 
   return (

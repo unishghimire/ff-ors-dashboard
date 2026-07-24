@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
-import { listEntities, callFunction } from '../api/client'
-import { Activity, Calendar, Crosshair, AlertTriangle, RefreshCw, Plug } from 'lucide-react'
+import { listEntities, getMatchSummary } from '../api/client'
+import { Activity, Calendar, Crosshair, AlertTriangle, RefreshCw, Plug, Settings as SettingsIcon } from 'lucide-react'
+import { Link } from 'react-router-dom'
 
 export default function Dashboard() {
   const [matches, setMatches] = useState([])
@@ -9,9 +10,11 @@ export default function Dashboard() {
   const [destinations, setDestinations] = useState([])
   const [matchSummary, setMatchSummary] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [configError, setConfigError] = useState(false)
 
   async function fetchData() {
     setLoading(true)
+    setConfigError(false)
     try {
       const [m, t, v, d] = await Promise.all([
         listEntities('Match').catch(() => []),
@@ -25,14 +28,33 @@ export default function Dashboard() {
       setDestinations(d)
       const liveMatch = m.find(x => x.status === 'in_match')
       if (liveMatch) {
-        const summary = await callFunction('generateMatchSummary', { match_id: liveMatch.id }).catch(() => null)
+        const summary = await getMatchSummary(liveMatch.id).catch(() => null)
         setMatchSummary(summary)
       }
-    } catch (e) { console.error(e) }
+    } catch (e) {
+      if (e.message?.includes('not configured')) setConfigError(true)
+    }
     setLoading(false)
   }
 
   useEffect(() => { fetchData(); const interval = setInterval(fetchData, 15000); return () => clearInterval(interval) }, [])
+
+  if (configError) {
+    return (
+      <div className="p-6">
+        <div className="card p-8 text-center max-w-md mx-auto mt-12">
+          <SettingsIcon className="w-12 h-12 mx-auto mb-4 opacity-30" />
+          <h2 className="text-lg font-bold mb-2">Dashboard Not Connected</h2>
+          <p className="text-sm mb-4" style={{ color: 'var(--ors-text-muted)' }}>
+            You need to set your Base44 app domain in Settings before the dashboard can connect.
+          </p>
+          <Link to="/settings" className="btn-primary inline-flex items-center gap-2">
+            <SettingsIcon className="w-4 h-4" /> Go to Settings
+          </Link>
+        </div>
+      </div>
+    )
+  }
 
   const liveMatches = matches.filter(m => m.status === 'in_match')
   const scheduledMatches = matches.filter(m => m.status === 'scheduled')
