@@ -1,0 +1,93 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ors-bg: #0a0e17;
+  --ors-surface: #111827;
+  --ors-border: #1f2937;
+  --ors-accent: #f97316;
+  --ors-accent-hover: #ea580c;
+  --ors-text: #f3f4f6;
+  --ors-text-muted: #9ca3af;
+  --ors-green: #22c55e;
+  --ors-red: #ef4444;
+  --ors-yellow: #eab308;
+}
+
+body {
+  background: var(--ors-bg);
+  color: var(--ors-text);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+.sidebar-link {
+  @apply flex items-center gap-3 px-4 py-2.5 rounded-lg transition-colors text-sm font-medium;
+  color: var(--ors-text-muted);
+}
+.sidebar-link:hover {
+  background: var(--ors-surface);
+  color: var(--ors-text);
+}
+.sidebar-link.active {
+  background: rgba(249, 115, 22, 0.1);
+  color: var(--ors-accent);
+}
+
+.card {
+  background: var(--ors-surface);
+  border: 1px solid var(--ors-border);
+  @apply rounded-xl;
+}
+
+.stat-tile {
+  background: var(--ors-surface);
+  border: 1px solid var(--ors-border);
+  @apply rounded-xl p-5;
+}
+
+.btn-primary {
+  background: var(--ors-accent);
+  color: white;
+  @apply px-4 py-2 rounded-lg font-medium text-sm transition-colors;
+}
+.btn-primary:hover {
+  background: var(--ors-accent-hover);
+}
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  background: var(--ors-surface);
+  border: 1px solid var(--ors-border);
+  color: var(--ors-text);
+  @apply px-4 py-2 rounded-lg font-medium text-sm transition-colors;
+}
+.btn-secondary:hover {
+  border-color: var(--ors-accent);
+}
+
+.input {
+  background: var(--ors-bg);
+  border: 1px solid var(--ors-border);
+  color: var(--ors-text);
+  @apply px-3 py-2 rounded-lg text-sm w-full outline-none transition-colors;
+}
+.input:focus {
+  border-color: var(--ors-accent);
+}
+
+.badge {
+  @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+}
+.badge-green { background: rgba(34, 197, 94, 0.15); color: var(--ors-green); }
+.badge-red { background: rgba(239, 68, 68, 0.15); color: var(--ors-red); }
+.badge-yellow { background: rgba(234, 179, 8, 0.15); color: var(--ors-yellow); }
+.badge-orange { background: rgba(249, 115, 22, 0.15); color: var(--ors-accent); }
+.badge-gray { background: rgba(156, 163, 175, 0.15); color: var(--ors-text-muted); }
+
+.scroll-thin::-webkit-scrollbar { width: 6px; }
+.scroll-thin::-webkit-scrollbar-track { background: var(--ors-bg); }
+.scroll-thin::-webkit-scrollbar-thumb { background: var(--ors-border); border-radius: 3px; }
