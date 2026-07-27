@@ -392,10 +392,11 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, frame_id: frame.id, frame });
       }
       case 'get_latest_frames': {
-        let q = db.collection('match_frames').orderBy('created_at', 'desc').limit(params.limit || 10);
+        let q = db.collection('match_frames');
         if (params.match_id) q = q.where('match_id', '==', params.match_id);
-        const snap = await q.get();
-        return res.status(200).json({ items: snapData(snap) });
+        const lSnap = await q.limit(params.limit || 10).get();
+        const items = snapData(lSnap).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+        return res.status(200).json({ items });
       }
 
       // === OCR Processing ===
@@ -428,9 +429,10 @@ export default async function handler(req, res) {
                 const pd = p.data();
                 if (pd.ign?.toLowerCase().includes(s.name?.toLowerCase())) {
                   const parts = await db.collection('match_participants')
-                    .where('match_id', '==', frame.match_id)
-                    .where('player_id', '==', p.id).get();
-                  parts.docs.forEach(d => d.ref.update({ kills: s.kills || 0 }));
+                    .where('match_id', '==', frame.match_id).get();
+                  parts.docs.forEach(d => {
+                    if (d.data().player_id === p.id) d.ref.update({ kills: s.kills || 0 });
+                  });
                 }
               }
             }
@@ -442,17 +444,21 @@ export default async function handler(req, res) {
               for (const t of teams.docs) {
                 if (t.data().name?.toLowerCase().includes(p.name?.toLowerCase())) {
                   const parts = await db.collection('match_participants')
-                    .where('match_id', '==', frame.match_id)
-                    .where('team_id', '==', t.id).get();
-                  parts.docs.forEach(d => d.ref.update({ placement: p.placement }));
+                    .where('match_id', '==', frame.match_id).get();
+                  parts.docs.forEach(d => {
+                    if (d.data().team_id === t.id) d.ref.update({ placement: p.placement });
+                  });
                 }
               }
             }
           }
           // Violations
           const prevSnap = await db.collection('match_frames')
-            .where('match_id', '==', frame.match_id).orderBy('created_at', 'desc').limit(2).get();
-          const prevDocs = snapData(prevSnap).filter(d => d.id !== params.frame_id);
+            .where('match_id', '==', frame.match_id).limit(50).get();
+          const prevDocs = snapData(prevSnap)
+            .filter(d => d.id !== params.frame_id)
+            .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+            .slice(0, 1);
           const violations = await checkViolations(db, frame.match_id, params.frame_id, normalized, prevDocs[0]);
           const status = confidence >= 0.6 ? 'completed' : 'flagged';
           await db.collection('match_frames').doc(params.frame_id).update({
@@ -489,9 +495,10 @@ export default async function handler(req, res) {
               for (const p of players.docs) {
                 if (p.data().ign?.toLowerCase().includes(s.name?.toLowerCase())) {
                   const parts = await db.collection('match_participants')
-                    .where('match_id', '==', params.match_id)
-                    .where('player_id', '==', p.id).get();
-                  parts.docs.forEach(d => d.ref.update({ kills: s.kills || 0 }));
+                    .where('match_id', '==', params.match_id).get();
+                  parts.docs.forEach(d => {
+                    if (d.data().player_id === p.id) d.ref.update({ kills: s.kills || 0 });
+                  });
                 }
               }
             }
@@ -503,17 +510,21 @@ export default async function handler(req, res) {
               for (const t of teams.docs) {
                 if (t.data().name?.toLowerCase().includes(p.name?.toLowerCase())) {
                   const parts = await db.collection('match_participants')
-                    .where('match_id', '==', params.match_id)
-                    .where('team_id', '==', t.id).get();
-                  parts.docs.forEach(d => d.ref.update({ placement: p.placement }));
+                    .where('match_id', '==', params.match_id).get();
+                  parts.docs.forEach(d => {
+                    if (d.data().team_id === t.id) d.ref.update({ placement: p.placement });
+                  });
                 }
               }
             }
           }
           // Violations
           const prevSnap = await db.collection('match_frames')
-            .where('match_id', '==', params.match_id).orderBy('created_at', 'desc').limit(2).get();
-          const prevDocs = snapData(prevSnap).filter(d => d.id !== frame.id);
+            .where('match_id', '==', params.match_id).limit(50).get();
+          const prevDocs = snapData(prevSnap)
+            .filter(d => d.id !== frame.id)
+            .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+            .slice(0, 1);
           const violations = await checkViolations(db, params.match_id, frame.id, normalized, prevDocs[0]);
           const status = confidence >= 0.6 ? 'completed' : 'flagged';
           await db.collection('match_frames').doc(frame.id).update({
@@ -603,8 +614,8 @@ export default async function handler(req, res) {
         const match = docData(matchSnap);
         const partSnap = await db.collection('match_participants').where('match_id', '==', params.match_id).get();
         const participants = snapData(partSnap);
-        const frameSnap = await db.collection('match_frames').where('match_id', '==', params.match_id).orderBy('created_at', 'desc').limit(1).get();
-        const lastFrame = snapData(frameSnap)[0];
+        const frameSnap = await db.collection('match_frames').where('match_id', '==', params.match_id).limit(50).get();
+        const lastFrame = snapData(frameSnap).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))[0];
         return res.status(200).json({
           success: true, match,
           current_state: {
