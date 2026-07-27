@@ -38,19 +38,12 @@ async function listColl(db, coll, params) {
   if (params.status) q = q.where('status', '==', params.status);
   if (params.resolved !== undefined) q = q.where('resolved', '==', params.resolved);
   q = q.limit(Math.min(params.limit || 100, 500));
-  // Try with orderBy first; fall back to no orderBy if composite index missing
-  try {
-    const snap = await q.orderBy('created_at', 'desc').get();
-    return snapData(snap);
-  } catch (e) {
-    if (hasFilter && e.message?.includes('FAILED_PRECONDITION')) {
-      const snap = await q.get();
-      const items = snapData(snap);
-      items.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
-      return items;
-    }
-    throw e;
-  }
+  // When there's a filter, skip orderBy (avoids composite index requirement + double query)
+  // and sort in memory instead
+  const snap = await q.get();
+  const items = snapData(snap);
+  items.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+  return items;
 }
 
 async function createDoc(db, coll, data) {
