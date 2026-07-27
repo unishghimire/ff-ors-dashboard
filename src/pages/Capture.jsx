@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { listEntities, callFunction } from '../api/client'
-import { Radio, Play, Square, Camera, Activity } from 'lucide-react'
+import { Radio, Play, Square, Camera, Activity, AlertCircle } from 'lucide-react'
 
 export default function Capture() {
   const [matches, setMatches] = useState([])
@@ -12,16 +12,27 @@ export default function Capture() {
   const [lastPhase, setLastPhase] = useState(null)
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
+  const [backendConnected, setBackendConnected] = useState(true)
+  const [pipelineErrors, setPipelineErrors] = useState(0)
 
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const streamRef = useRef(null)
   const captureIntervalRef = useRef(null)
 
-  useEffect(() => { listEntities('Match').then(m => { setMatches(m); if (m.length > 0) setSelectedMatch(m[0].id) }).catch(() => {}) }, [])
+  useEffect(() => {
+    listEntities('Match').then(m => {
+      setMatches(m)
+      if (m.length > 0) setSelectedMatch(m[0].id)
+      setBackendConnected(true)
+    }).catch(() => {
+      setBackendConnected(false)
+      // Allow test mode — no match needed
+      setSelectedMatch('test')
+    })
+  }, [])
 
   async function startCapture() {
-    if (!selectedMatch) { setError('Select a match first'); return }
     setError('')
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
@@ -35,7 +46,14 @@ export default function Capture() {
       }
       setStreaming(true)
       setStatus('Capturing screen...')
+      setFrameCount(0)
+      setPipelineErrors(0)
       startFrameCapture()
+
+      // Stop capture when user stops sharing via browser UI
+      stream.getVideoTracks()[0].addEventListener('ended', () => {
+        stopCapture()
+      })
     } catch (e) {
       setError(`Screen capture failed: ${e.message}`)
       setStreaming(false)
@@ -57,33 +75,45 @@ export default function Capture() {
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
     const base64 = canvas.toDataURL('image/png').split(',')[1]
 
+    const frameNum = frameCount + 1
+    setFrameCount(prev => prev + 1)
+
+    // Test mode — just show the frame was captured
+    if (selectedMatch === 'test' || !backendConnected) {
+      setStatus(`Frame ${frameNum} captured (test mode — backend not connected). Screen sharing is working!`)
+      return
+    }
+
+    // Production mode — send to backend pipeline
     try {
       const result = await callFunction('ingestCapturedFrame', {
         match_id: selectedMatch,
-        frame_number: frameCount + 1,
+        frame_number: frameNum,
         image_base64: base64,
         captured_at: new Date().toISOString()
       })
-      setFrameCount(prev => prev + 1)
       if (result.frame_id) {
-        setStatus(`Frame ${frameCount + 1} ingested. Running OCR...`)
-        // Run OCR after a brief delay
+        setStatus(`Frame ${frameNum} ingested. Running OCR...`)
         setTimeout(async () => {
-          const ocrResult = await callFunction('runOcrVisionProcessing', { frame_id: result.frame_id }).catch(() => null)
-          if (ocrResult) {
-            setLastConfidence(ocrResult.ocr_confidence)
-            setLastPhase(ocrResult.game_phase)
-            setStatus(`Frame ${frameCount + 1} processed. Confidence: ${(ocrResult.ocr_confidence * 100).toFixed(0)}%`)
-            // Normalize and detect violations
-            await callFunction('normalizeFrameData', { frame_id: result.frame_id }).catch(() => {})
-            await callFunction('detectRuleViolation', { match_id: selectedMatch, frame_id: result.frame_id }).catch(() => {})
-            // Push to external APIs
-            await callFunction('pushMatchDataToExternal', { match_id: selectedMatch }).catch(() => {})
+          try {
+            const ocrResult = await callFunction('runOcrVisionProcessing', { frame_id: result.frame_id })
+            if (ocrResult) {
+              setLastConfidence(ocrResult.ocr_confidence)
+              setLastPhase(ocrResult.game_phase)
+              setStatus(`Frame ${frameNum} processed. Confidence: ${(ocrResult.ocr_confidence * 100).toFixed(0)}%`)
+              await callFunction('normalizeFrameData', { frame_id: result.frame_id }).catch(() => {})
+              await callFunction('detectRuleViolation', { match_id: selectedMatch, frame_id: result.frame_id }).catch(() => {})
+              await callFunction('pushMatchDataToExternal', { match_id: selectedMatch }).catch(() => {})
+            }
+          } catch (e) {
+            setPipelineErrors(prev => prev + 1)
+            setStatus(`Frame ${frameNum} captured but OCR pipeline error: ${e.message}`)
           }
         }, 2000)
       }
     } catch (e) {
-      setStatus(`Frame capture error: ${e.message}`)
+      setPipelineErrors(prev => prev + 1)
+      setStatus(`Frame ${frameNum} captured but backend error: ${e.message}`)
     }
   }
 
@@ -102,14 +132,30 @@ export default function Capture() {
         <p className="text-sm mt-1" style={{ color: 'var(--ors-text-muted)' }}>Capture live Free Fire spectator feed and process through OCR pipeline</p>
       </div>
 
+      {/* Backend status warning */}
+      {!backendConnected && (
+        <div className="card p-4 border-l-4" style={{ borderColor: 'var(--ors-yellow)' }}>
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" style={{ color: 'var(--ors-yellow)' }} />
+            <div className="text-sm">
+              <p className="font-medium mb-1">Test Mode — Backend Not Connected</p>
+              <p style={{ color: 'var(--ors-text-muted)' }}>
+                Screen sharing will work, but the OCR pipeline (frame processing, kill tracking, API push) is disabled.
+                To enable full functionality, configure your Base44 app domain in <a href="/settings" className="underline" style={{ color: 'var(--ors-accent)' }}>Settings</a>.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Controls */}
       <div className="card p-5 space-y-4">
         <div className="grid grid-cols-3 gap-4">
           <div>
             <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--ors-text-muted)' }}>SELECT MATCH</label>
             <select className="input" value={selectedMatch} onChange={e => setSelectedMatch(e.target.value)} disabled={streaming}>
-              <option value="">Select a match...</option>
-              {matches.map(m => <option key={m.id} value={m.id}>Match #{m.match_number} — {m.status}</option>)}
+              <option value="test">Test Mode (no match)</option>
+              {matches.map(m => <option key={m.id} value={m.id}>Match #{m.match_number} — {m.map || 'No map'} ({m.status})</option>)}
             </select>
           </div>
           <div>
@@ -148,7 +194,7 @@ export default function Capture() {
             <div className="flex items-center justify-center h-72" style={{ color: 'var(--ors-text-muted)' }}>
               <div className="text-center">
                 <Radio className="w-12 h-12 mx-auto mb-3 opacity-30" />
-                <p className="text-sm">Select a match and click Start Capture</p>
+                <p className="text-sm">Select a match (or use Test Mode) and click Start Capture</p>
               </div>
             </div>
           )}
@@ -157,7 +203,7 @@ export default function Capture() {
       </div>
 
       {/* Processing stats */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-4 gap-4">
         <div className="stat-tile">
           <div className="text-xs font-medium mb-1" style={{ color: 'var(--ors-text-muted)' }}>FRAMES CAPTURED</div>
           <div className="text-2xl font-bold">{frameCount}</div>
@@ -172,15 +218,35 @@ export default function Capture() {
           <div className="text-xs font-medium mb-1" style={{ color: 'var(--ors-text-muted)' }}>LAST GAME PHASE</div>
           <div className="text-2xl font-bold capitalize">{lastPhase || '—'}</div>
         </div>
+        <div className="stat-tile">
+          <div className="text-xs font-medium mb-1" style={{ color: 'var(--ors-text-muted)' }}>PIPELINE ERRORS</div>
+          <div className="text-2xl font-bold" style={{ color: pipelineErrors > 0 ? 'var(--ors-red)' : 'var(--ors-text-muted)' }}>{pipelineErrors}</div>
+        </div>
       </div>
 
       {/* Status log */}
       {status && (
         <div className="card p-4">
           <div className="flex items-center gap-2">
-            <Activity className="w-4 h-4" style={{ color: 'var(--ors-accent)' }} />
+            <Activity className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--ors-accent)' }} />
             <span className="text-sm">{status}</span>
           </div>
+        </div>
+      )}
+
+      {/* Quick test guide */}
+      {!streaming && frameCount === 0 && (
+        <div className="card p-5">
+          <h3 className="text-sm font-semibold mb-3">Quick Test Guide</h3>
+          <ol className="space-y-2 text-sm" style={{ color: 'var(--ors-text-muted)' }}>
+            <li>1. Select <strong style={{ color: 'var(--ors-text)' }}>Test Mode (no match)</strong> from the match dropdown</li>
+            <li>2. Choose your capture FPS (2 FPS is recommended)</li>
+            <li>3. Click <strong style={{ color: 'var(--ors-text)' }}>Start Capture</strong></li>
+            <li>4. Your browser will ask you to choose a screen/window — select your Free Fire game window</li>
+            <li>5. The live preview will show your screen — this confirms screen sharing works</li>
+            <li>6. The frame counter will increment as frames are captured</li>
+            <li>7. Click <strong style={{ color: 'var(--ors-text)' }}>Stop Capture</strong> when done</li>
+          </ol>
         </div>
       )}
     </div>
