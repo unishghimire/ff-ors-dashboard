@@ -34,7 +34,7 @@ export default function Tournaments() {
 
   async function fetchTournamentData(tid) {
     const [tm, pl] = await Promise.all([
-      listEntities('Team', { filter: JSON.stringify({ tournament_id: tid }) }).catch(() => []),
+      listEntities('Team', { tournament_id: tid }).catch(() => []),
       gateway('list_players_for_tournament', { tournament_id: tid }).catch(() => ({ items: [] }))
     ])
     setTeams(tm)
