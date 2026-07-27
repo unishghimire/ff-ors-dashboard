@@ -280,6 +280,21 @@ export default async function handler(req, res) {
 
       // === Players ===
       case 'list_players': return res.status(200).json({ items: await listColl(db, 'players', params) });
+      case 'list_players_for_tournament': {
+        const teamSnap = await db.collection('teams').where('tournament_id', '==', params.tournament_id).get();
+        const teamIds = teamSnap.docs.map(d => d.id);
+        if (teamIds.length === 0) return res.status(200).json({ items: [] });
+        // Firestore 'in' query supports max 30 values
+        const chunks = [];
+        for (let i = 0; i < teamIds.length; i += 30) chunks.push(teamIds.slice(i, i + 30));
+        const allPlayers = [];
+        for (const chunk of chunks) {
+          const snap = await db.collection('players').where('team_id', 'in', chunk).get();
+          snap.docs.forEach(d => allPlayers.push({ id: d.id, ...d.data() }));
+        }
+        allPlayers.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+        return res.status(200).json({ items: allPlayers });
+      }
       case 'create_player': return res.status(200).json(await createDoc(db, 'players', params.data));
       case 'delete_player': { await db.collection('players').doc(params.id).delete(); return res.status(200).json({ success: true }); }
 

@@ -19,24 +19,52 @@ export default function Tournaments() {
   const [importStep, setImportStep] = useState('upload') // upload -> map -> importing -> done
   const [importResult, setImportResult] = useState(null)
   const [importError, setImportError] = useState('')
+  const [importTournament, setImportTournament] = useState(null) // tournament selected in import panel
   const fileRef = useRef(null)
 
   async function fetchData() {
     const t = await listEntities('Tournament').catch(() => [])
     setTournaments(t)
-    if (t.length > 0 && !selectedTournament) setSelectedTournament(t[0].id)
+    if (t.length > 0 && !selectedTournament) {
+      setSelectedTournament(t[0].id)
+      setImportTournament(t[0].id)
+    }
   }
   useEffect(() => { fetchData() }, [])
 
   async function fetchTournamentData(tid) {
     const [tm, pl] = await Promise.all([
       listEntities('Team', { filter: JSON.stringify({ tournament_id: tid }) }).catch(() => []),
-      listEntities('Player').catch(() => [])
+      gateway('list_players_for_tournament', { tournament_id: tid }).catch(() => ({ items: [] }))
     ])
     setTeams(tm)
-    setPlayers(pl)
+    setPlayers(pl.items || [])
   }
-  useEffect(() => { if (selectedTournament) fetchTournamentData(selectedTournament) }, [selectedTournament])
+  useEffect(() => {
+    if (selectedTournament) {
+      fetchTournamentData(selectedTournament)
+      // Reset import state when tournament changes
+      if (showImport && importStep !== 'importing') {
+        setExcelData(null)
+        setExcelHeaders([])
+        setColumnMapping({})
+        setImportStep('upload')
+        setImportResult(null)
+        setImportError('')
+        if (fileRef.current) fileRef.current.value = ''
+      }
+      setImportTournament(selectedTournament)
+    }
+  }, [selectedTournament])
+
+  // Sync importTournament when tournament list changes
+  useEffect(() => {
+    if (!importTournament && tournaments.length > 0) {
+      setImportTournament(selectedTournament || tournaments[0].id)
+    }
+  }, [tournaments])
+
+  const selectedTournamentName = tournaments.find(t => t.id === importTournament)?.name || '—'
 
   async function createTournament() {
     if (!form.name) return
@@ -129,8 +157,8 @@ export default function Tournaments() {
   }
 
   async function doImport() {
-    if (!selectedTournament) {
-      setImportError('Select a tournament first.')
+    if (!importTournament) {
+      setImportError('Select a tournament to import into.')
       return
     }
     setImportStep('importing')
@@ -138,12 +166,15 @@ export default function Tournaments() {
     const rows = mappedRows()
     try {
       const result = await gateway('import_players', {
-        tournament_id: selectedTournament,
+        tournament_id: importTournament,
         players: rows
       })
       setImportResult(result)
       setImportStep('done')
-      fetchTournamentData(selectedTournament)
+      // If imported into the currently viewed tournament, refresh its data
+      if (importTournament === selectedTournament) {
+        fetchTournamentData(selectedTournament)
+      }
     } catch (err) {
       setImportError(`Import failed: ${err.message}`)
       setImportStep('map')
@@ -161,6 +192,18 @@ export default function Tournaments() {
     if (fileRef.current) fileRef.current.value = ''
   }
 
+  function switchImportTournament(tid) {
+    setImportTournament(tid)
+    // Reset import state when switching target tournament
+    setExcelData(null)
+    setExcelHeaders([])
+    setColumnMapping({})
+    setImportStep('upload')
+    setImportResult(null)
+    setImportError('')
+    if (fileRef.current) fileRef.current.value = ''
+  }
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -169,7 +212,7 @@ export default function Tournaments() {
           <p className="text-sm mt-1" style={{ color: 'var(--ors-text-muted)' }}>Manage tournaments, teams, and players</p>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => setShowImport(!showImport)} className="btn-secondary flex items-center gap-2">
+          <button onClick={() => { setShowImport(!showImport); if (!showImport) setImportTournament(selectedTournament) }} className="btn-secondary flex items-center gap-2">
             <Upload className="w-4 h-4" /> Import from Excel
           </button>
           <button onClick={() => setShowForm(!showForm)} className="btn-primary flex items-center gap-2">
@@ -207,6 +250,31 @@ export default function Tournaments() {
             </h2>
             <button onClick={resetImport} className="text-sm" style={{ color: 'var(--ors-text-muted)' }}>Close</button>
           </div>
+
+          {/* Tournament selector — shows which tournament data goes into */}
+          <div className="flex items-center gap-3 p-3 rounded-lg" style={{ background: 'var(--ors-bg)', border: '1px solid var(--ors-border)' }}>
+            <Trophy className="w-4 h-4 shrink-0" style={{ color: 'var(--ors-accent)' }} />
+            <span className="text-sm shrink-0" style={{ color: 'var(--ors-text-muted)' }}>Importing into:</span>
+            <select
+              className="input flex-1"
+              value={importTournament || ''}
+              onChange={e => switchImportTournament(e.target.value)}
+              disabled={importStep === 'importing'}
+            >
+              <option value="">— Select tournament —</option>
+              {tournaments.map(t => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Info banner showing teams count in target tournament */}
+          {importTournament && importStep === 'upload' && (
+            <div className="text-xs flex items-center gap-2" style={{ color: 'var(--ors-text-muted)' }}>
+              <span>This tournament currently has <strong className="text-white">{teams.filter(t => t.tournament_id === importTournament).length}</strong> teams.</span>
+              <span>Imported players will be added to this tournament only — other tournaments are unaffected.</span>
+            </div>
+          )}
 
           {importError && (
             <div className="flex items-center gap-2 p-3 rounded-lg" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)' }}>
@@ -305,11 +373,19 @@ export default function Tournaments() {
                 </p>
               )}
 
+              {/* Import target reminder */}
+              <div className="flex items-center gap-2 p-2 rounded-lg text-xs" style={{ background: 'var(--ors-bg)', border: '1px solid var(--ors-border)' }}>
+                <Trophy className="w-3.5 h-3.5" style={{ color: 'var(--ors-accent)' }} />
+                <span style={{ color: 'var(--ors-text-muted)' }}>
+                  These <strong className="text-white">{mappedRows().length}</strong> players will be imported into <strong className="text-white">{selectedTournamentName}</strong>
+                </span>
+              </div>
+
               {/* Actions */}
               <div className="flex gap-3">
                 <button
                   onClick={doImport}
-                  disabled={!columnMapping.name}
+                  disabled={!columnMapping.name || !importTournament}
                   className="btn-primary flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <Upload className="w-4 h-4" /> Import {mappedRows().length} Players
@@ -325,7 +401,9 @@ export default function Tournaments() {
           {importStep === 'importing' && (
             <div className="text-center py-8">
               <div className="inline-block w-8 h-8 border-2 border-orange-500 border-t-transparent rounded-full animate-spin mb-3"></div>
-              <p className="text-sm" style={{ color: 'var(--ors-text-muted)' }}>Importing players to Firestore...</p>
+              <p className="text-sm" style={{ color: 'var(--ors-text-muted)' }}>
+                Importing {mappedRows().length} players to {selectedTournamentName}...
+              </p>
             </div>
           )}
 
@@ -337,7 +415,7 @@ export default function Tournaments() {
                 <div>
                   <p className="font-medium">Import complete!</p>
                   <p className="text-sm" style={{ color: 'var(--ors-text-muted)' }}>
-                    {importResult.imported} players imported, {importResult.teams_created} new teams created.
+                    {importResult.imported} players imported to {selectedTournamentName}, {importResult.teams_created} new teams created.
                   </p>
                 </div>
               </div>
@@ -353,7 +431,12 @@ export default function Tournaments() {
                 </div>
               )}
 
-              <button onClick={resetImport} className="btn-primary">Done</button>
+              <div className="flex gap-3">
+                <button onClick={() => { resetImport(); setShowImport(true); setImportStep('upload') }} className="btn-secondary">
+                  Import Another File
+                </button>
+                <button onClick={resetImport} className="btn-primary">Done</button>
+              </div>
             </div>
           )}
         </div>
