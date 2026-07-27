@@ -259,7 +259,19 @@ export default async function handler(req, res) {
       case 'list_tournaments': return res.status(200).json({ items: await listColl(db, 'tournaments', params) });
       case 'create_tournament': return res.status(200).json(await createDoc(db, 'tournaments', params.data));
       case 'update_tournament': return res.status(200).json(await updateDoc(db, 'tournaments', params.id, params.data));
-      case 'delete_tournament': { await db.collection('tournaments').doc(params.id).delete(); return res.status(200).json({ success: true }); }
+      case 'delete_tournament': {
+        const tTeams = await db.collection('teams').where('tournament_id', '==', params.id).get();
+        const batch = db.batch();
+        // Collect all player refs for all teams
+        for (const teamDoc of tTeams.docs) {
+          batch.delete(teamDoc.ref);
+          const tPlayers = await db.collection('players').where('team_id', '==', teamDoc.id).get();
+          tPlayers.docs.forEach(p => batch.delete(p.ref));
+        }
+        batch.delete(db.collection('tournaments').doc(params.id));
+        await batch.commit();
+        return res.status(200).json({ success: true });
+      }
 
       // === Matches ===
       case 'list_matches': return res.status(200).json({ items: await listColl(db, 'matches', params) });

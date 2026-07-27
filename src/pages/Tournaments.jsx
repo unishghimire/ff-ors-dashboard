@@ -256,30 +256,29 @@ export default function Tournaments() {
     })
   }
 
+  const [deleting, setDeleting] = useState(false)
+
   async function confirmDelete() {
     if (!deleteModal) return
     const { type, data } = deleteModal
-    setDeleteModal(null)
-
-    if (type === 'tournament') {
-      // Delete all teams+players first, then tournament
-      for (const team of teams) {
-        const teamPlayers = players.filter(p => p.team_id === team.id)
-        for (const p of teamPlayers) await deleteEntity('Player', p.id).catch(() => {})
-        await deleteEntity('Team', team.id).catch(() => {})
+    setDeleting(true)
+    try {
+      if (type === 'tournament') {
+        // Gateway cascades: deletes all teams + players + tournament in one batch
+        await deleteEntity('Tournament', data.id).catch(() => {})
+        if (selectedTournament === data.id) setSelectedTournament(null)
+        await fetchData()
+      } else if (type === 'team') {
+        // Gateway cascades: deletes team + its players in one batch
+        await deleteEntity('Team', data.id).catch(() => {})
+        await fetchTournamentData(selectedTournament)
+      } else if (type === 'player') {
+        await deleteEntity('Player', data.id).catch(() => {})
+        await fetchTournamentData(selectedTournament)
       }
-      await deleteEntity('Tournament', data.id).catch(() => {})
-      if (selectedTournament === data.id) setSelectedTournament(null)
-      await fetchData()
-    } else if (type === 'team') {
-      // Delete players in this team, then the team
-      const teamPlayers = players.filter(p => p.team_id === data.id)
-      for (const p of teamPlayers) await deleteEntity('Player', p.id).catch(() => {})
-      await deleteEntity('Team', data.id).catch(() => {})
-      await fetchTournamentData(selectedTournament)
-    } else if (type === 'player') {
-      await deleteEntity('Player', data.id).catch(() => {})
-      await fetchTournamentData(selectedTournament)
+    } finally {
+      setDeleting(false)
+      setDeleteModal(null)
     }
   }
 
