@@ -83,7 +83,7 @@ async function runGeminiOCR(imageData, mimeType = 'image/jpeg') {
 Only include visible fields. Set null for not visible. Return ONLY valid JSON.`;
 
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GOOGLE_API_KEY}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent?key=${GOOGLE_API_KEY}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
