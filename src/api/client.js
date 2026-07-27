@@ -1,9 +1,9 @@
-import { gatewayUrl, getAuthToken, setAuthToken, getAppDomain, setAppDomain } from '../config'
+import { gatewayUrl, getConnectionToken, setConnectionToken, getAppDomain, setAppDomain } from '../config'
 
 function getHeaders() {
   const headers = { 'Content-Type': 'application/json' }
-  const token = getAuthToken()
-  if (token) headers['Authorization'] = `Bearer ${token}`
+  const token = getConnectionToken()
+  if (token) headers['X-API-Key'] = token
   return headers
 }
 
@@ -18,7 +18,7 @@ export async function gateway(operation, params = {}) {
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.error || `Gateway ${operation} failed: ${res.status}`)
+    throw new Error(err.error || err.body?.error || `Gateway ${operation} failed: ${res.status}`)
   }
   return res.json()
 }
@@ -105,4 +105,19 @@ export async function resolveViolation(id) {
   return gateway('resolve_violation', { id })
 }
 
-export { getAuthToken, setAuthToken, getAppDomain, setAppDomain }
+// Check gateway health
+export async function checkGatewayHealth() {
+  try {
+    const url = gatewayUrl()
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ operation: 'gateway_status' })
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+export { getConnectionToken, setConnectionToken, getAppDomain, setAppDomain }

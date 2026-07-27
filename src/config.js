@@ -1,20 +1,22 @@
 // Base44 API configuration
-// The ORS dashboard communicates with the Base44 backend through a single gateway function.
-// Backend functions are accessible at https://<app-domain>/functions/<function-name>
-// They use asServiceRole internally — NO authentication token needed for external HTTP calls.
+// The ORS dashboard communicates with the Superagent backend gateway function.
+// The gateway is at: https://wren-9de01d4e.base44.app/functions/orsGateway
+// Authentication: X-API-Key header with the ORS connection token.
 //
-// To find your app domain:
-// 1. Open your Base44 app in the builder (https://app.base44.com)
-// 2. Click "Publish" if not already published
-// 3. Your app domain will be shown (e.g., https://ors.base44.app)
+// The connection token is auto-injected on first load and can be
+// changed in Settings → Connection Token.
 
 export const BASE44_APP_ID = '6a6321f7f7401f199de01d4e'
 
-// Auto-detect the Base44 app domain
-const DEFAULT_DOMAIN = 'https://ors.base44.app'
+// The Superagent's external function URL — always works, no publish needed
+const SUPERAGENT_DOMAIN = 'https://wren-9de01d4e.base44.app'
+const GATEWAY_PATH = '/functions/orsGateway'
+
+// Default connection token (pre-configured for the dashboard)
+const DEFAULT_TOKEN = 'ORS-5b1ef207375dbe0dc9497d5466603741961e8a7d46afbaa8a3e8cbab92d5d2b3'
 
 export function getAppDomain() {
-  return localStorage.getItem('ors_app_domain') || DEFAULT_DOMAIN
+  return localStorage.getItem('ors_app_domain') || SUPERAGENT_DOMAIN
 }
 
 export function setAppDomain(domain) {
@@ -22,26 +24,37 @@ export function setAppDomain(domain) {
   localStorage.setItem('ors_app_domain', clean)
 }
 
+export function getConnectionToken() {
+  return localStorage.getItem('ors_connection_token') || DEFAULT_TOKEN
+}
+
+export function setConnectionToken(token) {
+  localStorage.setItem('ors_connection_token', token)
+}
+
+// Legacy compat
 export function getAuthToken() {
-  return localStorage.getItem('base44_token') || ''
+  return getConnectionToken()
 }
 
 export function setAuthToken(token) {
-  localStorage.setItem('base44_token', token)
+  setConnectionToken(token)
 }
 
 export function gatewayUrl() {
-  const domain = getAppDomain()
-  if (!domain) return ''
-  return `${domain}/functions/orsGateway`
+  return `${getAppDomain()}${GATEWAY_PATH}`
 }
 
 export function functionUrl(functionName) {
-  const domain = getAppDomain()
-  if (!domain) return ''
-  return `${domain}/functions/${functionName}`
+  return `${getAppDomain()}/functions/${functionName}`
 }
 
 export function isConfigured() {
-  return !!getAppDomain()
+  return !!getAppDomain() && !!getConnectionToken()
+}
+
+// Reset to Superagent defaults
+export function resetToDefaults() {
+  localStorage.removeItem('ors_app_domain')
+  localStorage.removeItem('ors_connection_token')
 }
