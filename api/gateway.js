@@ -308,6 +308,7 @@ export default async function handler(req, res) {
         return res.status(200).json({ items: allPlayers });
       }
       case 'create_player': return res.status(200).json(await createDoc(db, 'players', params.data));
+      case 'update_player': return res.status(200).json(await updateDoc(db, 'players', params.id, params.data));
       case 'delete_player': { await db.collection('players').doc(params.id).delete(); return res.status(200).json({ success: true }); }
 
       // === Import Players from Excel ===

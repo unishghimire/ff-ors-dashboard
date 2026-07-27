@@ -58,6 +58,7 @@ export async function updateEntity(entityName, id, data) {
   const operationMap = {
     Tournament: 'update_tournament',
     Team: 'update_team',
+    Player: 'update_player',
     Match: 'update_match',
     ExternalApiDestination: 'update_api_destination',
     MatchParticipant: 'update_match_participant'
