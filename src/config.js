@@ -6,12 +6,15 @@
 // To find your app domain:
 // 1. Open your Base44 app in the builder (https://app.base44.com)
 // 2. Click "Publish" if not already published
-// 3. Your app domain will be shown (e.g., https://wren-ors.base44.app)
+// 3. Your app domain will be shown (e.g., https://ors.base44.app)
 
 export const BASE44_APP_ID = '6a6321f7f7401f199de01d4e'
 
+// Auto-detect the Base44 app domain
+const DEFAULT_DOMAIN = 'https://ors.base44.app'
+
 export function getAppDomain() {
-  return localStorage.getItem('ors_app_domain') || ''
+  return localStorage.getItem('ors_app_domain') || DEFAULT_DOMAIN
 }
 
 export function setAppDomain(domain) {
