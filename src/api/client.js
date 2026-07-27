@@ -1,4 +1,4 @@
-import { gatewayUrl, getConnectionToken, setConnectionToken, getAppDomain, setAppDomain } from '../config'
+import { gatewayUrl, getConnectionToken, setConnectionToken, setGatewayUrl } from '../config'
 
 function getHeaders() {
   const headers = { 'Content-Type': 'application/json' }
@@ -10,7 +10,6 @@ function getHeaders() {
 // Gateway call — handles all entity CRUD and composite operations
 export async function gateway(operation, params = {}) {
   const url = gatewayUrl()
-  if (!url) throw new Error('App domain not configured. Go to Settings to set it.')
   const res = await fetch(url, {
     method: 'POST',
     headers: getHeaders(),
@@ -18,7 +17,7 @@ export async function gateway(operation, params = {}) {
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.error || err.body?.error || `Gateway ${operation} failed: ${res.status}`)
+    throw new Error(err.error || `Gateway ${operation} failed: ${res.status}`)
   }
   return res.json()
 }
@@ -47,7 +46,8 @@ export async function createEntity(entityName, data) {
     Team: 'create_team',
     Player: 'create_player',
     Match: 'create_match',
-    ExternalApiDestination: 'create_api_destination'
+    ExternalApiDestination: 'create_api_destination',
+    MatchParticipant: 'create_match_participant'
   }
   const op = operationMap[entityName]
   if (!op) throw new Error(`No gateway create operation for entity: ${entityName}`)
@@ -60,32 +60,37 @@ export async function updateEntity(entityName, id, data) {
     Team: 'update_team',
     Match: 'update_match',
     ExternalApiDestination: 'update_api_destination',
-    RuleViolation: 'resolve_violation'
+    MatchParticipant: 'update_match_participant'
   }
   const op = operationMap[entityName]
   if (!op) throw new Error(`No gateway update operation for entity: ${entityName}`)
-  if (entityName === 'RuleViolation') {
-    return gateway('resolve_violation', { id })
-  }
+  if (entityName === 'RuleViolation') return gateway('resolve_violation', { id })
   return gateway(op, { id, data })
 }
 
 export async function deleteEntity(entityName, id) {
-  throw new Error('Delete operations are not supported via gateway. Use the Base44 dashboard.')
+  const operationMap = {
+    Tournament: 'delete_tournament',
+    Team: 'delete_team',
+    Player: 'delete_player',
+    Match: 'delete_match',
+    ExternalApiDestination: 'delete_api_destination'
+  }
+  const op = operationMap[entityName]
+  if (!op) throw new Error(`No gateway delete operation for entity: ${entityName}`)
+  return gateway(op, { id })
 }
 
-// Backend function calls (for OCR pipeline)
+// Backend function calls (OCR pipeline)
 export async function callFunction(functionName, body = {}) {
-  const { functionUrl } = await import('../config')
-  const url = functionUrl(functionName)
-  if (!url) throw new Error('App domain not configured. Go to Settings to set it.')
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: getHeaders(),
-    body: JSON.stringify(body)
-  })
-  if (!res.ok) throw new Error(`Function ${functionName} failed: ${res.status}`)
-  return res.json()
+  const opMap = {
+    ingestCapturedFrame: 'ingest_frame',
+    runOcrVisionProcessing: 'process_frame',
+    pushMatchDataToExternal: 'push_match_data',
+    captureAndProcess: 'capture_and_process'
+  }
+  const op = opMap[functionName] || functionName
+  return gateway(op, body)
 }
 
 // Specialized operations
@@ -105,11 +110,14 @@ export async function resolveViolation(id) {
   return gateway('resolve_violation', { id })
 }
 
+export async function seedData() {
+  return gateway('seed_data')
+}
+
 // Check gateway health
 export async function checkGatewayHealth() {
   try {
-    const url = gatewayUrl()
-    const res = await fetch(url, {
+    const res = await fetch(gatewayUrl(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ operation: 'gateway_status' })
@@ -120,4 +128,4 @@ export async function checkGatewayHealth() {
   }
 }
 
-export { getConnectionToken, setConnectionToken, getAppDomain, setAppDomain }
+export { getConnectionToken, setConnectionToken, setGatewayUrl }
