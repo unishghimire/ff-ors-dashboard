@@ -88,7 +88,9 @@ export async function callFunction(functionName, body = {}) {
     ingestCapturedFrame: 'ingest_frame',
     runOcrVisionProcessing: 'process_frame',
     pushMatchDataToExternal: 'push_match_data',
-    captureAndProcess: 'capture_and_process'
+    captureAndProcess: 'capture_and_process',
+    normalizeFrameData: 'normalize_frame',
+    detectRuleViolation: 'detect_violation'
   }
   const op = opMap[functionName] || functionName
   return gateway(op, body)

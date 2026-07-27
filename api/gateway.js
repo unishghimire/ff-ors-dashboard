@@ -523,8 +523,10 @@ export default async function handler(req, res) {
           // Push to destinations
           const matchData = await buildMatchData(db, params.match_id);
           const pushResults = await pushToDestinations(db, params.match_id, matchData);
+          const updatedFrame = (await db.collection('match_frames').doc(frame.id).get()).data();
           return res.status(200).json({
-            success: true, frame_id: frame.id, ocr_confidence: confidence,
+            success: true, frame_id: frame.id, frame: { id: frame.id, ...updatedFrame },
+            ocr_confidence: confidence,
             game_phase: normalized.game_phase, alive_count: normalized.alive_count,
             zone_phase: normalized.zone_phase, violations: violations.length,
             processing_status: status, push_results: pushResults

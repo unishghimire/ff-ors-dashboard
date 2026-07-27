@@ -121,39 +121,29 @@ export default function Capture() {
 
   async function processFrameInBackground(frameNum, base64, matchId) {
     try {
-      const result = await callFunction('ingestCapturedFrame', {
+      // Single-call pipeline: ingest + OCR + normalize + violations + push — all server-side
+      const result = await callFunction('captureAndProcess', {
         match_id: matchId,
         frame_number: frameNum,
-        image_base64: base64,
+        image_data: base64,
+        image_mime_type: 'image/jpeg',
         captured_at: new Date().toISOString()
       })
-      if (result.frame_id) {
-        setStatus(`Frame ${frameNum} ingested. Running OCR...`)
-        // Track timeout so we can cancel on stop
-        const timer = setTimeout(async () => {
-          try {
-            const ocrResult = await callFunction('runOcrVisionProcessing', { frame_id: result.frame_id })
-            if (ocrResult) {
-              setLastConfidence(ocrResult.ocr_confidence)
-              setLastPhase(ocrResult.game_phase)
-              setStatus(`Frame ${frameNum} processed. Confidence: ${(ocrResult.ocr_confidence * 100).toFixed(0)}%`)
-              // Fire remaining steps in parallel — don't block
-              Promise.allSettled([
-                callFunction('normalizeFrameData', { frame_id: result.frame_id }),
-                callFunction('detectRuleViolation', { match_id: matchId, frame_id: result.frame_id }),
-                callFunction('pushMatchDataToExternal', { match_id: matchId })
-              ])
-            }
-          } catch (e) {
-            setPipelineErrors(prev => prev + 1)
-            setStatus(`Frame ${frameNum}: OCR error: ${e.message}`)
-          }
-        }, 2000)
-        pendingTimeoutsRef.current.push(timer)
+      if (result.success) {
+        const frame = result.frame || {}
+        const nd = frame.normalized_data || {}
+        const conf = nd.confidence || 0
+        setLastConfidence(conf)
+        setLastPhase(nd.game_phase || 'unknown')
+        const kills = (nd.kill_feed || []).length
+        setStatus(`Frame ${frameNum} processed | Phase: ${nd.game_phase || '?'} | Alive: ${nd.alive_count ?? '?'} | Kills: ${kills} | Conf: ${(conf * 100).toFixed(0)}%`)
+      } else {
+        setPipelineErrors(prev => prev + 1)
+        setStatus(`Frame ${frameNum}: ${result.error || 'processing failed'}`)
       }
     } catch (e) {
       setPipelineErrors(prev => prev + 1)
-      setStatus(`Frame ${frameNum}: backend error: ${e.message}`)
+      setStatus(`Frame ${frameNum}: ${e.message}`)
     }
   }
 
