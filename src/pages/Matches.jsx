@@ -1,20 +1,22 @@
 import { useState, useEffect } from 'react'
-import { listEntities, createEntity, updateEntity } from '../api/client'
-import { Plus, Calendar, MapPin, AlertCircle } from 'lucide-react'
+import { listEntities, createEntity, updateEntity, deleteEntity } from '../api/client'
+import { Plus, Calendar, MapPin, AlertCircle, Pencil, Trash2, X } from 'lucide-react'
 
 const LOCAL_MATCHES_KEY = 'ors_local_matches'
-const LOCAL_TOURNAMENTS_KEY = 'ors_local_tournaments'
 
 export default function Matches() {
   const [tournaments, setTournaments] = useState([])
   const [matches, setMatches] = useState([])
   const [selectedTournament, setSelectedTournament] = useState('')
   const [showForm, setShowForm] = useState(false)
+  const [editModal, setEditModal] = useState(null) // match object or null
+  const [deleteModal, setDeleteModal] = useState(null) // { data, message }
+  const [deleting, setDeleting] = useState(false)
   const [form, setForm] = useState({ match_number: 1, map: 'Bermuda', scheduled_at: '', observer_feed_label: 'Spectator 1' })
+  const [editForm, setEditForm] = useState({})
   const [backendConnected, setBackendConnected] = useState(true)
   const [error, setError] = useState('')
 
-  // Load tournaments from backend or fallback to defaults
   useEffect(() => {
     listEntities('Tournament').then(t => {
       setTournaments(t)
@@ -22,11 +24,9 @@ export default function Matches() {
       setBackendConnected(true)
     }).catch(() => {
       setBackendConnected(false)
-      // Use default tournament for local mode
       const defaultT = { id: 'local-tournament', name: 'Free Fire Championship 2026' }
       setTournaments([defaultT])
       setSelectedTournament('local-tournament')
-      // Load any locally saved matches
       const local = JSON.parse(localStorage.getItem(LOCAL_MATCHES_KEY) || '[]')
       setMatches(local)
     })
@@ -39,25 +39,17 @@ export default function Matches() {
       setMatches(local)
       return
     }
-    const m = await listEntities('Match').catch(() => [])
-    setMatches(m.filter(x => x.tournament_id === selectedTournament))
+    const m = await listEntities('Match', { tournament_id: selectedTournament, limit: 500 }).catch(() => [])
+    setMatches(m)
   }
   useEffect(() => { fetchMatches() }, [selectedTournament])
 
   async function createMatch() {
     if (!selectedTournament) return
     setError('')
-
     if (selectedTournament.startsWith('local-')) {
-      // Local mode — save to localStorage
       const local = JSON.parse(localStorage.getItem(LOCAL_MATCHES_KEY) || '[]')
-      const newMatch = {
-        id: `local-match-${Date.now()}`,
-        ...form,
-        tournament_id: selectedTournament,
-        status: 'scheduled',
-        created_at: new Date().toISOString()
-      }
+      const newMatch = { id: `local-match-${Date.now()}`, ...form, tournament_id: selectedTournament, status: 'scheduled', created_at: new Date().toISOString() }
       local.push(newMatch)
       localStorage.setItem(LOCAL_MATCHES_KEY, JSON.stringify(local))
       setMatches(local)
@@ -65,15 +57,60 @@ export default function Matches() {
       setShowForm(false)
       return
     }
-
-    // Backend mode
     try {
       await createEntity('Match', { ...form, tournament_id: selectedTournament, status: 'scheduled' })
       setForm({ match_number: form.match_number + 1, map: 'Bermuda', scheduled_at: '', observer_feed_label: 'Spectator 1' })
       setShowForm(false)
       fetchMatches()
-    } catch (e) {
-      setError(`Failed to create match: ${e.message}`)
+    } catch (e) { setError(`Failed to create match: ${e.message}`) }
+  }
+
+  function openEdit(m) {
+    const dt = m.scheduled_at ? new Date(m.scheduled_at).toISOString().slice(0, 16) : ''
+    setEditForm({ ...m, scheduled_at: dt })
+    setEditModal(m)
+  }
+
+  async function saveEdit() {
+    if (!editModal) return
+    setError('')
+    const data = {
+      match_number: Number(editForm.match_number),
+      map: editForm.map,
+      scheduled_at: editForm.scheduled_at ? new Date(editForm.scheduled_at).toISOString() : null,
+      observer_feed_label: editForm.observer_feed_label || 'Spectator 1',
+      status: editForm.status || 'scheduled'
+    }
+    if (editModal.id.startsWith('local-')) {
+      const local = JSON.parse(localStorage.getItem(LOCAL_MATCHES_KEY) || '[]')
+      const updated = local.map(m => m.id === editModal.id ? { ...m, ...data } : m)
+      localStorage.setItem(LOCAL_MATCHES_KEY, JSON.stringify(updated))
+      setMatches(updated)
+    } else {
+      try {
+        await updateEntity('Match', editModal.id, data)
+        fetchMatches()
+      } catch (e) { setError(`Failed to update match: ${e.message}`) }
+    }
+    setEditModal(null)
+  }
+
+  async function confirmDelete() {
+    if (!deleteModal) return
+    setDeleting(true)
+    try {
+      if (deleteModal.data.id.startsWith('local-')) {
+        const local = JSON.parse(localStorage.getItem(LOCAL_MATCHES_KEY) || '[]')
+        const updated = local.filter(m => m.id !== deleteModal.data.id)
+        localStorage.setItem(LOCAL_MATCHES_KEY, JSON.stringify(updated))
+        setMatches(updated)
+      } else {
+        await deleteEntity('Match', deleteModal.data.id).catch(() => {})
+        fetchMatches()
+      }
+    } finally {
+      setDeleting(false)
+      setDeleteModal(null)
     }
   }
 
@@ -88,10 +125,11 @@ export default function Matches() {
     try {
       await updateEntity('Match', id, { status })
       fetchMatches()
-    } catch (e) {
-      setError(`Failed to update match: ${e.message}`)
-    }
+    } catch (e) { setError(`Failed to update match: ${e.message}`) }
   }
+
+  const MAPS = ['Bermuda', 'Purgatory', 'Kalahari', 'Alpine', 'Nexterra']
+  const STATUS_COLORS = { scheduled: 'gray', lobby: 'yellow', in_match: 'green', results: 'orange', cancelled: 'gray' }
 
   return (
     <div className="p-6 space-y-6">
@@ -146,11 +184,7 @@ export default function Matches() {
             <div>
               <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--ors-text-muted)' }}>MAP</label>
               <select className="input" value={form.map} onChange={e => setForm({...form, map: e.target.value})}>
-                <option value="Bermuda">Bermuda</option>
-                <option value="Purgatory">Purgatory</option>
-                <option value="Kalahari">Kalahari</option>
-                <option value="Alpine">Alpine</option>
-                <option value="Nexterra">Nexterra</option>
+                {MAPS.map(m => <option key={m} value={m}>{m}</option>)}
               </select>
             </div>
             <div>
@@ -190,7 +224,7 @@ export default function Matches() {
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
-                  <span className={`badge badge-${m.status === 'in_match' ? 'green' : m.status === 'results' ? 'orange' : m.status === 'lobby' ? 'yellow' : 'gray'}`}>{m.status}</span>
+                  <span className={`badge badge-${STATUS_COLORS[m.status] || 'gray'}`}>{m.status}</span>
                   <select value={m.status} onChange={e => updateMatchStatus(m.id, e.target.value)} className="input" style={{ width: 'auto', padding: '6px 8px' }}>
                     <option value="scheduled">scheduled</option>
                     <option value="lobby">lobby</option>
@@ -198,12 +232,94 @@ export default function Matches() {
                     <option value="results">results</option>
                     <option value="cancelled">cancelled</option>
                   </select>
+                  <button onClick={() => openEdit(m)} className="p-1.5 rounded-lg" style={{ color: 'var(--ors-text-muted)' }} title="Edit match">
+                    <Pencil className="w-4 h-4" />
+                  </button>
+                  <button onClick={() => setDeleteModal({ data: m, message: `Delete Match #${m.match_number} (${m.map})? Match participants and captured frames will also be deleted.` })}
+                    className="p-1.5 rounded-lg" style={{ color: 'var(--ors-red)' }} title="Delete match">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
                 </div>
               </div>
             </div>
           ))
         )}
       </div>
+
+      {/* Edit Modal */}
+      {editModal && (
+        <div className="fixed inset-0 flex items-center justify-center z-50" style={{ background: 'rgba(0,0,0,0.6)' }}>
+          <div className="card p-6 w-full max-w-md space-y-4" style={{ background: 'var(--ors-bg-card)' }}>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold">Edit Match #{editModal.match_number}</h2>
+              <button onClick={() => setEditModal(null)} className="p-1 rounded" style={{ color: 'var(--ors-text-muted)' }}><X className="w-5 h-5" /></button>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--ors-text-muted)' }}>MATCH NUMBER</label>
+                <input type="number" className="input" value={editForm.match_number || ''} onChange={e => setEditForm({...editForm, match_number: Number(e.target.value)})} />
+              </div>
+              <div>
+                <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--ors-text-muted)' }}>MAP</label>
+                <select className="input" value={editForm.map || 'Bermuda'} onChange={e => setEditForm({...editForm, map: e.target.value})}>
+                  {MAPS.map(m => <option key={m} value={m}>{m}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--ors-text-muted)' }}>STATUS</label>
+                <select className="input" value={editForm.status || 'scheduled'} onChange={e => setEditForm({...editForm, status: e.target.value})}>
+                  <option value="scheduled">scheduled</option>
+                  <option value="lobby">lobby</option>
+                  <option value="in_match">in_match</option>
+                  <option value="results">results</option>
+                  <option value="cancelled">cancelled</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--ors-text-muted)' }}>SCHEDULED AT</label>
+                <input type="datetime-local" className="input" value={editForm.scheduled_at || ''} onChange={e => setEditForm({...editForm, scheduled_at: e.target.value})} />
+              </div>
+              <div>
+                <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--ors-text-muted)' }}>OBSERVER FEED</label>
+                <input className="input" value={editForm.observer_feed_label || ''} onChange={e => setEditForm({...editForm, observer_feed_label: e.target.value})} />
+              </div>
+            </div>
+            <div className="flex gap-3 justify-end pt-2">
+              <button onClick={() => setEditModal(null)} className="btn-secondary">Cancel</button>
+              <button onClick={saveEdit} className="btn-primary">Save Changes</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {deleteModal && (
+        <div className="fixed inset-0 flex items-center justify-center z-50" style={{ background: 'rgba(0,0,0,0.6)' }}>
+          <div className="card p-6 w-full max-w-md space-y-4" style={{ background: 'var(--ors-bg-card)' }}>
+            <div className="flex items-start gap-3">
+              <div className="rounded-lg p-2 shrink-0" style={{ background: 'rgba(239,68,68,0.1)' }}>
+                <Trash2 className="w-5 h-5" style={{ color: '#ef4444' }} />
+              </div>
+              <div>
+                <p className="font-medium">Match #{deleteModal.data.match_number} — {deleteModal.data.map}</p>
+                <p className="text-sm mt-1" style={{ color: 'var(--ors-text-muted)' }}>{deleteModal.message}</p>
+              </div>
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button onClick={() => setDeleteModal(null)} disabled={deleting} className="btn-secondary" style={{ opacity: deleting ? 0.5 : 1 }}>Cancel</button>
+              <button onClick={confirmDelete} disabled={deleting}
+                className="px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2" style={{ background: '#ef4444', color: '#fff', opacity: deleting ? 0.6 : 1 }}>
+                {deleting ? (
+                  <>
+                    <span className="inline-block w-4 h-4 border-2 rounded-full animate-spin" style={{ borderColor: 'rgba(255,255,255,0.3)', borderTopColor: '#fff' }}></span>
+                    Deleting...
+                  </>
+                ) : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
