@@ -283,6 +283,67 @@ export default async function handler(req, res) {
       case 'create_player': return res.status(200).json(await createDoc(db, 'players', params.data));
       case 'delete_player': { await db.collection('players').doc(params.id).delete(); return res.status(200).json({ success: true }); }
 
+      // === Import Players from Excel ===
+      case 'import_players': {
+        const { tournament_id, players: playerRows } = params;
+        if (!tournament_id || !Array.isArray(playerRows) || playerRows.length === 0) {
+          return res.status(400).json({ error: 'tournament_id and players array are required' });
+        }
+        // Fetch existing teams for this tournament
+        const existingTeamsSnap = await db.collection('teams').where('tournament_id', '==', tournament_id).get();
+        const teamMap = new Map();
+        for (const t of existingTeamsSnap.docs) {
+          const td = t.data();
+          teamMap.set(td.name?.toLowerCase(), { id: t.id, ...td });
+          if (td.team_code) teamMap.set(td.team_code?.toLowerCase(), { id: t.id, ...td });
+        }
+        const createdTeams = [];
+        const createdPlayers = [];
+        const errors = [];
+        for (let i = 0; i < playerRows.length; i++) {
+          const row = playerRows[i];
+          try {
+            const teamName = (row.team_name || row.team || '').toString().trim();
+            const teamCode = (row.team_code || row.code || '').toString().trim();
+            const playerName = (row.name || row.player_name || '').toString().trim();
+            const ign = (row.ign || row.ingame_name || row.in_game_name || playerName).toString().trim();
+            const uid = (row.uid || row.in_game_uid || row.ff_uid || '').toString().trim();
+            if (!playerName) { errors.push(`Row ${i+2}: Missing player name`); continue; }
+            if (!teamName && !teamCode) { errors.push(`Row ${i+2}: Missing team for player "${playerName}"`); continue; }
+            // Find or create team
+            const lookupKey = (teamCode || teamName).toLowerCase();
+            let team = teamMap.get(lookupKey);
+            if (!team && teamName) team = teamMap.get(teamName.toLowerCase());
+            if (!team) {
+              const newTeam = await createDoc(db, 'teams', {
+                tournament_id, name: teamName || teamCode, team_code: teamCode || '',
+                total_kills: 0, placement: null, logo_url: null
+              });
+              teamMap.set(lookupKey, newTeam);
+              if (teamName) teamMap.set(teamName.toLowerCase(), newTeam);
+              createdTeams.push(newTeam);
+              team = newTeam;
+            }
+            // Create player
+            const player = await createDoc(db, 'players', {
+              team_id: team.id, name: playerName, ign, in_game_uid: uid || null,
+              status: 'active'
+            });
+            createdPlayers.push(player);
+          } catch (e) {
+            errors.push(`Row ${i+2}: ${e.message}`);
+          }
+        }
+        return res.status(200).json({
+          success: true,
+          imported: createdPlayers.length,
+          teams_created: createdTeams.length,
+          errors: errors.length > 0 ? errors : undefined,
+          players: createdPlayers,
+          teams: createdTeams
+        });
+      }
+
       // === Match Participants ===
       case 'list_match_participants': return res.status(200).json({ items: await listColl(db, 'match_participants', params) });
       case 'update_match_participant': return res.status(200).json(await updateDoc(db, 'match_participants', params.id, params.data));
