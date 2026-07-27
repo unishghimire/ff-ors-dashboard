@@ -31,14 +31,26 @@ const snapData = s => s.docs.map(docData);
 
 async function listColl(db, coll, params) {
   let q = db.collection(coll);
+  const hasFilter = params.tournament_id || params.match_id || params.team_id || params.status || params.resolved !== undefined;
   if (params.tournament_id) q = q.where('tournament_id', '==', params.tournament_id);
   if (params.match_id) q = q.where('match_id', '==', params.match_id);
   if (params.team_id) q = q.where('team_id', '==', params.team_id);
   if (params.status) q = q.where('status', '==', params.status);
   if (params.resolved !== undefined) q = q.where('resolved', '==', params.resolved);
-  q = q.orderBy('created_at', 'desc').limit(Math.min(params.limit || 100, 500));
-  const snap = await q.get();
-  return snapData(snap);
+  q = q.limit(Math.min(params.limit || 100, 500));
+  // Try with orderBy first; fall back to no orderBy if composite index missing
+  try {
+    const snap = await q.orderBy('created_at', 'desc').get();
+    return snapData(snap);
+  } catch (e) {
+    if (hasFilter && e.message?.includes('FAILED_PRECONDITION')) {
+      const snap = await q.get();
+      const items = snapData(snap);
+      items.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+      return items;
+    }
+    throw e;
+  }
 }
 
 async function createDoc(db, coll, data) {
