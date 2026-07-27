@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { listEntities, createEntity, updateEntity, deleteEntity, gateway } from '../api/client'
 import { Plus, Trash2, Trophy, Users, Upload, FileSpreadsheet, CheckCircle, XCircle, Edit3, AlertTriangle } from 'lucide-react'
-import * as XLSX from 'xlsx'
+
 
 // === Modal Component ===
 function Modal({ title, onClose, children, wide }) {
@@ -319,14 +319,15 @@ export default function Tournaments() {
     if (fileRef.current) fileRef.current.value = ''
   }
 
-  function handleFileUpload(e) {
+  async function handleFileUpload(e) {
     const file = e.target.files[0]
     if (!file) return
     setImportError(''); setImportResult(null)
     const reader = new FileReader()
-    reader.onload = (evt) => {
+    reader.onload = async (evt) => {
       try {
         const data = new Uint8Array(evt.target.result)
+        const XLSX = await import('xlsx')
         const wb = XLSX.read(data, { type: 'array' })
         const ws = wb.Sheets[wb.SheetNames[0]]
         const rows = XLSX.utils.sheet_to_json(ws, { defval: '' })
