@@ -393,6 +393,82 @@ export default async function handler(req, res) {
         });
         return res.status(200).json({ success: true, frame_id: frame.id, frame });
       }
+      // === Live Capture Feed (for Dashboard) ===
+      case 'get_live_capture': {
+        // Find any match currently being captured
+        const matchSnap = await db.collection('matches').get();
+        const allMatches = snapData(matchSnap);
+        const liveMatch = allMatches.find(m => m.status === 'in_match');
+        if (!liveMatch) return res.status(200).json({ live: false, message: 'No match currently being captured' });
+
+        // Get latest frames for the live match
+        const frameSnap = await db.collection('match_frames')
+          .where('match_id', '==', liveMatch.id).limit(20).get();
+        const frames = snapData(frameSnap).sort((a, b) =>
+          (b.created_at || '').localeCompare(a.created_at || '')
+        );
+        const latestFrame = frames[0];
+        const nd = latestFrame?.normalized_data || {};
+
+        // Get participants for kill leaderboard
+        const partSnap = await db.collection('match_participants')
+          .where('match_id', '==', liveMatch.id).get();
+        const participants = snapData(partSnap);
+
+        // Get tournament info
+        const tourSnap = await db.collection('tournaments').doc(liveMatch.tournament_id || '').get();
+        const tournament = tourSnap.exists ? docData(tourSnap) : null;
+
+        // Count frames by status
+        const frameStats = {
+          total: frames.length,
+          completed: frames.filter(f => f.processing_status === 'completed').length,
+          flagged: frames.filter(f => f.processing_status === 'flagged').length,
+          failed: frames.filter(f => f.processing_status === 'failed').length,
+          processing: frames.filter(f => f.processing_status === 'processing').length
+        };
+
+        // Get last 5 kill feed entries across all frames
+        const killFeed = [];
+        for (const f of frames.slice(0, 10)) {
+          const kf = f.normalized_data?.kill_feed || [];
+          for (const k of kf) {
+            killFeed.push({ killer: k.killer, victim: k.victim, frame: f.frame_number, time: f.created_at });
+          }
+        }
+
+        return res.status(200).json({
+          live: true,
+          match: liveMatch,
+          tournament: tournament ? { name: tournament.name, id: tournament.id } : null,
+          latest_frame: latestFrame ? {
+            frame_number: latestFrame.frame_number,
+            game_phase: latestFrame.game_phase,
+            ocr_confidence: latestFrame.ocr_confidence,
+            processing_status: latestFrame.processing_status,
+            captured_at: latestFrame.captured_at,
+            created_at: latestFrame.created_at,
+            alive_count: nd.alive_count,
+            total_players: nd.total_players,
+            zone_phase: nd.zone_phase,
+            map_name: nd.map_name,
+            kill_feed: (nd.kill_feed || []).slice(0, 5),
+            player_stats: (nd.player_stats || []).slice(0, 10),
+            placements: (nd.placements || []).slice(0, 12)
+          } : null,
+          frame_stats: frameStats,
+          kill_feed_recent: killFeed.slice(0, 10),
+          kill_leaderboard: participants
+            .filter(p => (p.kills || 0) > 0)
+            .sort((a, b) => (b.kills || 0) - (a.kills || 0))
+            .slice(0, 10)
+            .map(p => ({ player_id: p.player_id, kills: p.kills || 0, placement: p.placement || null })),
+          alive_count: participants.filter(p => p.alive_status !== false).length,
+          total_kills: participants.reduce((s, p) => s + (p.kills || 0), 0),
+          participants_count: participants.length
+        });
+      }
+
       case 'get_latest_frames': {
         let q = db.collection('match_frames');
         if (params.match_id) q = q.where('match_id', '==', params.match_id);

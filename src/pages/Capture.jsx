@@ -46,7 +46,13 @@ export default function Capture() {
   const captureFpsRef = useRef(2)
   const ocrFpsRef = useRef(1)
   const backendConnectedRef = useRef(true)
+  const mountedRef = useRef(true)
   const MAX_QUEUE = 15                     // Max frames in queue before dropping old ones
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
 
   useEffect(() => { selectedMatchRef.current = selectedMatch }, [selectedMatch])
   useEffect(() => { captureFpsRef.current = captureFps }, [captureFps])
@@ -55,7 +61,7 @@ export default function Capture() {
 
   useEffect(() => {
     loadTournaments()
-    return () => stopCapture()
+    return () => stopCapture(true)
   }, [])
 
   // === Data Loading ===
@@ -177,9 +183,10 @@ export default function Capture() {
 
   // --- CAPTURE LOOP (fast) ---
   function scheduleNextCapture() {
-    if (!streamRef.current) return
+    if (!streamRef.current || !mountedRef.current) return
     const intervalMs = 1000 / captureFpsRef.current
     captureTimerRef.current = setTimeout(() => {
+      if (!streamRef.current || !mountedRef.current) return
       grabFrame()
       scheduleNextCapture()
     }, intervalMs)
@@ -196,14 +203,16 @@ export default function Capture() {
 
     frameCountRef.current += 1
     const frameNum = frameCountRef.current
-    if (frameNum % 5 === 0 || frameNum === 1) setFrameCount(frameNum)
+    if (mountedRef.current && (frameNum % 5 === 0 || frameNum === 1)) setFrameCount(frameNum)
 
     const matchId = selectedMatchRef.current
     const isTestMode = matchId === 'test' || !backendConnectedRef.current
 
     if (isTestMode) {
-      setFrameCount(frameNum)
-      setStatus(`Frame ${frameNum} captured (test mode - ${captureFpsRef.current} FPS preview)`)
+      if (mountedRef.current) {
+        setFrameCount(frameNum)
+        setStatus(`Frame ${frameNum} captured (test mode - ${captureFpsRef.current} FPS preview)`)
+      }
       return
     }
 
@@ -211,28 +220,30 @@ export default function Capture() {
     if (frameQueueRef.current.length >= MAX_QUEUE) {
       frameQueueRef.current.shift()
       droppedRef.current += 1
-      if (droppedRef.current % 5 === 0) setDroppedFrames(droppedRef.current)
+      if (mountedRef.current && droppedRef.current % 5 === 0) setDroppedFrames(droppedRef.current)
     }
     frameQueueRef.current.push({ frameNum, base64, matchId })
-    setQueueDepth(frameQueueRef.current.length)
+    if (mountedRef.current) setQueueDepth(frameQueueRef.current.length)
   }
 
   // --- OCR LOOP (slow, rate-limited) ---
   function scheduleNextOcr() {
-    if (!streamRef.current) return
+    if (!streamRef.current || !mountedRef.current) return
     const intervalMs = 1000 / ocrFpsRef.current
     ocrTimerRef.current = setTimeout(async () => {
+      if (!streamRef.current || !mountedRef.current) return
       await processNextFrame()
-      if (streamRef.current) scheduleNextOcr()
+      if (streamRef.current && mountedRef.current) scheduleNextOcr()
     }, intervalMs)
   }
 
   async function processNextFrame() {
     if (isOcrRunningRef.current) return  // Don't overlap OCR calls
     if (frameQueueRef.current.length === 0) return  // Nothing to process
+    if (!streamRef.current) return  // Stream stopped — don't process
 
     const frame = frameQueueRef.current.shift()
-    setQueueDepth(frameQueueRef.current.length)
+    if (mountedRef.current) setQueueDepth(frameQueueRef.current.length)
 
     isOcrRunningRef.current = true
     try {
@@ -245,37 +256,51 @@ export default function Capture() {
       })
       if (result.success) {
         processedCountRef.current += 1
-        if (processedCountRef.current % 3 === 0 || processedCountRef.current === 1) setProcessedCount(processedCountRef.current)
+        if (mountedRef.current && (processedCountRef.current % 3 === 0 || processedCountRef.current === 1)) setProcessedCount(processedCountRef.current)
         const frameData = result.frame || {}
         const nd = frameData.normalized_data || {}
         const conf = nd.confidence || 0
-        setLastConfidence(conf)
-        setLastPhase(nd.game_phase || 'unknown')
+        if (mountedRef.current) {
+          setLastConfidence(conf)
+          setLastPhase(nd.game_phase || 'unknown')
+        }
         const kills = (nd.kill_feed || []).length
-        setStatus(`Frame ${frame.frameNum} processed | Queue: ${frameQueueRef.current.length} | Phase: ${nd.game_phase || '?'} | Alive: ${nd.alive_count ?? '?'} | Kills: ${kills} | Conf: ${(conf * 100).toFixed(0)}%`)
+        if (mountedRef.current) setStatus(`Frame ${frame.frameNum} processed | Queue: ${frameQueueRef.current.length} | Phase: ${nd.game_phase || '?'} | Alive: ${nd.alive_count ?? '?'} | Kills: ${kills} | Conf: ${(conf * 100).toFixed(0)}%`)
       } else {
-        setPipelineErrors(prev => prev + 1)
-        setStatus(`Frame ${frame.frameNum}: ${result.error || 'processing failed'}`)
+        if (mountedRef.current) setPipelineErrors(prev => prev + 1)
+        if (mountedRef.current) setStatus(`Frame ${frame.frameNum}: ${result.error || 'processing failed'}`)
       }
     } catch (e) {
-      setPipelineErrors(prev => prev + 1)
-      setStatus(`Frame ${frame.frameNum}: ${e.message}`)
+      if (mountedRef.current) setPipelineErrors(prev => prev + 1)
+      if (mountedRef.current) setStatus(`Frame ${frame.frameNum}: ${e.message}`)
     } finally {
       isOcrRunningRef.current = false
     }
   }
 
-  function stopCapture() {
+  function stopCapture(isUnmounting = false) {
+    // Clear all timers FIRST — prevents any pending callbacks from running
     if (captureTimerRef.current) { clearTimeout(captureTimerRef.current); captureTimerRef.current = null }
     if (ocrTimerRef.current) { clearTimeout(ocrTimerRef.current); ocrTimerRef.current = null }
-    if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null }
-    if (videoRef.current) videoRef.current.srcObject = null
+    // Stop video stream
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop())
+      streamRef.current = null
+    }
+    if (videoRef.current) {
+      try { videoRef.current.srcObject = null } catch {}
+    }
+    // Clear refs
     isOcrRunningRef.current = false
-    setFrameCount(frameCountRef.current)
-    setProcessedCount(processedCountRef.current)
-    setQueueDepth(frameQueueRef.current.length)
-    setStreaming(false)
-    setStatus(`Capture stopped | ${frameCountRef.current} frames captured, ${processedCountRef.current} processed, ${droppedRef.current} dropped`)
+    frameQueueRef.current = []
+    // Only update state if NOT unmounting (prevents React warning)
+    if (!isUnmounting) {
+      setFrameCount(frameCountRef.current)
+      setProcessedCount(processedCountRef.current)
+      setQueueDepth(0)
+      setStreaming(false)
+      setStatus(`Capture stopped | ${frameCountRef.current} frames captured, ${processedCountRef.current} processed, ${droppedRef.current} dropped`)
+    }
   }
 
   const canStartCapture = () => {

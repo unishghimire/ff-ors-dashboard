@@ -19,7 +19,7 @@ export default function Violations() {
   }
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-6 space-y-6 page-enter">
       <div>
         <h1 className="text-2xl font-bold">Rule Violations</h1>
         <p className="text-sm mt-1" style={{ color: 'var(--ors-text-muted)' }}>Review and resolve data integrity violations</p>

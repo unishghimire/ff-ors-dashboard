@@ -123,6 +123,16 @@ export async function validateFrame(imageData, mimeType = 'image/jpeg') {
   return gateway('validate_frame', { image_data: imageData, image_mime_type: mimeType });
 }
 
+// Get live capture feed (for Dashboard)
+export async function getLiveCapture() {
+  return gateway('get_live_capture');
+}
+
+// Get latest frames for a match
+export async function getLatestFrames(matchId, limit = 10) {
+  return gateway('get_latest_frames', { match_id: matchId, limit });
+}
+
 // Check gateway health
 export async function checkGatewayHealth() {
   try {
