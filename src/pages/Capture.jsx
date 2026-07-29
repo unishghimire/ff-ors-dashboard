@@ -316,7 +316,7 @@ export default function Capture() {
   const matchLabel = matchInfo ? `Match #${matchInfo.match_number} - ${matchInfo.map || 'No map'}` : 'No match selected'
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-6 space-y-6 page-enter">
       <div>
         <h1 className="text-2xl font-bold">Screen Capture</h1>
         <p className="text-sm mt-1" style={{ color: 'var(--ors-text-muted)' }}>Capture live Free Fire spectator feed and process through OCR pipeline</p>
