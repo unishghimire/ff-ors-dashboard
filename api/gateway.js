@@ -72,15 +72,17 @@ async function runGeminiOCR(imageData, mimeType = 'image/jpeg') {
   if (!GOOGLE_API_KEY) throw new Error('GOOGLE_API_KEY not set');
   const prompt = `You are a Free Fire esports observer/referee assistant. Analyze this game screenshot and extract data as JSON:
 {
-  "game_phase": "lobby" | "in_game" | "results",
+  "game_phase": "lobby" | "loading" | "in_game" | "results",
+  "map_name": "Bermuda" | "Purgatory" | "Kalahari" | "Alpine" | "Nexterra" or null,
   "alive_count": number or null,
+  "total_players": number or null,
   "zone_phase": "1" | "2" | "3" | "4" | "5" | "final" or null,
   "kill_feed": [{"killer": "name", "victim": "name"}] or [],
   "player_stats": [{"name": "name", "kills": number}] or [],
   "placements": [{"name": "name", "placement": number}] or [],
   "confidence": 0.0 to 1.0
 }
-Only include visible fields. Set null for not visible. Return ONLY valid JSON.`;
+Only include visible fields. Set null for not visible. Return ONLY valid JSON, no markdown.`;
 
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent?key=${GOOGLE_API_KEY}`,
@@ -417,7 +419,8 @@ export default async function handler(req, res) {
           const ocr = await runGeminiOCR(imageData, mimeType);
           const confidence = ocr.confidence || 0;
           const normalized = {
-            game_phase: ocr.game_phase || 'unknown', alive_count: ocr.alive_count ?? null,
+            game_phase: ocr.game_phase || 'unknown', map_name: ocr.map_name || null,
+            alive_count: ocr.alive_count ?? null, total_players: ocr.total_players ?? null,
             zone_phase: ocr.zone_phase || null, kill_feed: ocr.kill_feed || [],
             player_stats: ocr.player_stats || [], placements: ocr.placements || [], confidence
           };
@@ -513,7 +516,8 @@ export default async function handler(req, res) {
           const ocr = await runGeminiOCR(params.image_data, params.image_mime_type || 'image/jpeg');
           const confidence = ocr.confidence || 0;
           const normalized = {
-            game_phase: ocr.game_phase || 'unknown', alive_count: ocr.alive_count ?? null,
+            game_phase: ocr.game_phase || 'unknown', map_name: ocr.map_name || null,
+            alive_count: ocr.alive_count ?? null, total_players: ocr.total_players ?? null,
             zone_phase: ocr.zone_phase || null, kill_feed: ocr.kill_feed || [],
             player_stats: ocr.player_stats || [], placements: ocr.placements || [], confidence
           };
