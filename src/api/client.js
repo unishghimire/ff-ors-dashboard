@@ -89,6 +89,7 @@ export async function callFunction(functionName, body = {}) {
     runOcrVisionProcessing: 'process_frame',
     pushMatchDataToExternal: 'push_match_data',
     captureAndProcess: 'capture_and_process',
+    validateFrame: 'validate_frame',
     normalizeFrameData: 'normalize_frame',
     detectRuleViolation: 'detect_violation'
   }
@@ -115,6 +116,11 @@ export async function resolveViolation(id) {
 
 export async function seedData() {
   return gateway('seed_data')
+}
+
+// Validate a single frame without storing (pre-capture check)
+export async function validateFrame(imageData, mimeType = 'image/jpeg') {
+  return gateway('validate_frame', { image_data: imageData, image_mime_type: mimeType });
 }
 
 // Check gateway health

@@ -472,35 +472,6 @@ export default async function handler(req, res) {
         }
       }
 
-      // === Pre-Capture Validation (no storage, no side effects) ===
-      case 'validate_frame': {
-        // Runs OCR on a single frame WITHOUT storing anything
-        // Returns detected game phase, map guess, alive count for operator verification
-        if (!params.image_data) return res.status(400).json({ error: 'image_data required' });
-        try {
-          const ocr = await runGeminiOCR(params.image_data, params.image_mime_type || 'image/jpeg');
-          const confidence = ocr.confidence || 0;
-          // Try to detect map from the screenshot (Free Fire shows map name in lobby/loading)
-          const mapGuess = ocr.map_name || null;
-          return res.status(200).json({
-            success: true,
-            detected: {
-              game_phase: ocr.game_phase || 'unknown',
-              alive_count: ocr.alive_count ?? null,
-              zone_phase: ocr.zone_phase || null,
-              map_guess: mapGuess,
-              kill_feed_count: (ocr.kill_feed || []).length,
-              player_stats_count: (ocr.player_stats || []).length,
-              placements_count: (ocr.placements || []).length,
-              confidence: confidence,
-              confidence_label: confidence >= 0.8 ? 'high' : confidence >= 0.6 ? 'medium' : confidence >= 0.4 ? 'low' : 'very_low'
-            }
-          });
-        } catch (e) {
-          return res.status(500).json({ success: false, error: e.message });
-        }
-      }
-
       // === Capture + Process + Push (all-in-one) ===
       case 'capture_and_process': {
         const frame = await createDoc(db, 'match_frames', {
