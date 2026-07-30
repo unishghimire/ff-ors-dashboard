@@ -2,6 +2,51 @@ import { useState, useRef, useEffect } from 'react'
 import { listEntities, callFunction, validateFrame } from '../api/client'
 import { Radio, Play, Square, Camera, Activity, AlertCircle, Shield, CheckCircle, XCircle, Trophy, MapPin, Eye, Zap, Gauge } from 'lucide-react'
 
+// === Image Compression Settings ===
+// WebP is 25-35% smaller than JPEG at the same quality.
+// Gemini supports WebP natively.
+// We detect WebP support at runtime and fall back to JPEG.
+const IMG_WIDTH = 640        // 640px wide — enough for HUD text readability
+const IMG_QUALITY = 0.45     // 0.45 — HUD text is high contrast, survives aggressive compression
+let _webpSupported = null     // cached check
+
+function detectWebP() {
+  if (_webpSupported !== null) return _webpSupported
+  try {
+    const c = document.createElement('canvas')
+    c.width = 1; c.height = 1
+    _webpSupported = c.toDataURL('image/webp', 0.5).startsWith('data:image/webp')
+  } catch { _webpSupported = false }
+  return _webpSupported
+}
+
+// Downscale + compress a video frame to a compact base64 payload
+// Crops to the top HUD region (top 55% of screen) when in compact mode
+function compressFrame(video, canvas, compact = false) {
+  const srcW = video.videoWidth || 1280
+  const srcH = video.videoHeight || 720
+
+  if (compact) {
+    // Crop top 55% of the screen — contains alive count, zone timer,
+    // kill feed, and start of player stats. Skip middle gameplay area.
+    const cropH = Math.round(srcH * 0.55)
+    canvas.width = IMG_WIDTH
+    canvas.height = Math.round(IMG_WIDTH * (cropH / srcW))
+    const ctx = canvas.getContext('2d')
+    ctx.drawImage(video, 0, 0, srcW, cropH, 0, 0, canvas.width, canvas.height)
+  } else {
+    canvas.width = IMG_WIDTH
+    canvas.height = Math.round(IMG_WIDTH * (srcH / srcW))
+    const ctx = canvas.getContext('2d')
+    ctx.drawImage(video, 0, 0, srcW, srcH, 0, 0, canvas.width, canvas.height)
+  }
+
+  const useWebP = detectWebP()
+  const type = useWebP ? 'image/webp' : 'image/jpeg'
+  const base64 = canvas.toDataURL(type, IMG_QUALITY).split(',')[1]
+  return { base64, mime: type }
+}
+
 export default function Capture() {
   // === Tournament & Match Selection ===
   const [tournaments, setTournaments] = useState([])
@@ -25,6 +70,7 @@ export default function Capture() {
   const [backendConnected, setBackendConnected] = useState(true)
   const [pipelineErrors, setPipelineErrors] = useState(0)
   const [droppedFrames, setDroppedFrames] = useState(0)
+  const [compactMode, setCompactMode] = useState(true)    // Crop to HUD area (top 55%)
   const [ocrLatency, setOcrLatency] = useState(null)         // ms per Gemini call
   const [ocrBusy, setOcrBusy] = useState(false)              // Gemini call in progress
 
@@ -50,6 +96,7 @@ export default function Capture() {
   const backendConnectedRef = useRef(true)
   const ocrLatencyRef = useRef(0)
   const lastFrameHashRef = useRef(0)
+  const compactModeRef = useRef(true)
   const mountedRef = useRef(true)
   const MAX_QUEUE = 5                     // Max frames in queue before dropping old ones
 
@@ -62,6 +109,7 @@ export default function Capture() {
   useEffect(() => { captureFpsRef.current = captureFps }, [captureFps])
   useEffect(() => { ocrFpsRef.current = ocrFps }, [ocrFps])
   useEffect(() => { backendConnectedRef.current = backendConnected }, [backendConnected])
+  useEffect(() => { compactModeRef.current = compactMode }, [compactMode])
 
   useEffect(() => {
     loadTournaments()
@@ -121,13 +169,8 @@ export default function Capture() {
       if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play() }
       await new Promise(r => setTimeout(r, 800))
       const video = videoRef.current, canvas = canvasRef.current
-      const srcW = video.videoWidth || 1280
-      const srcH = video.videoHeight || 720
-      canvas.width = 854; canvas.height = 480
-      const ctx = canvas.getContext('2d')
-      ctx.drawImage(video, 0, 0, srcW, srcH, 0, 0, 854, 480)
-      const base64 = canvas.toDataURL('image/jpeg', 0.5).split(',')[1]
-      const result = await validateFrame(base64, 'image/jpeg')
+      const { base64, mime } = compressFrame(video, canvas, false)
+      const result = await validateFrame(base64, mime)
       if (result.success) {
         setValidation({ detected: result.detected, confirmed: false })
         setStatus(`Validation complete - Phase: ${result.detected.game_phase}, Confidence: ${((result.detected.confidence || 0) * 100).toFixed(0)}%`)
@@ -201,17 +244,10 @@ export default function Capture() {
   function grabFrame() {
     if (!videoRef.current || !canvasRef.current || !streamRef.current) return
     const video = videoRef.current, canvas = canvasRef.current
-    // Downscale to 854x480 — Gemini can still read HUD text
-    // This cuts payload size by ~60% vs full 1280x720
-    const targetW = 854, targetH = 480
-    const srcW = video.videoWidth || 1280
-    const srcH = video.videoHeight || 720
-    canvas.width = targetW
-    canvas.height = targetH
-    const ctx = canvas.getContext('2d')
-    ctx.drawImage(video, 0, 0, srcW, srcH, 0, 0, targetW, targetH)
-    // JPEG quality 0.5 — game HUD text is high contrast, survives compression
-    const base64 = canvas.toDataURL('image/jpeg', 0.5).split(',')[1]
+    // Compact mode: crop to top 55% (HUD area) — saves ~45% payload
+    // Full mode: include entire screen (needed for results screen)
+    const { base64, mime } = compressFrame(video, canvas, compactModeRef.current)
+    const imgType = mime
 
     frameCountRef.current += 1
     const frameNum = frameCountRef.current
@@ -234,7 +270,7 @@ export default function Capture() {
       droppedRef.current += 1
       if (mountedRef.current && droppedRef.current % 5 === 0) setDroppedFrames(droppedRef.current)
     }
-    frameQueueRef.current.push({ frameNum, base64, matchId })
+    frameQueueRef.current.push({ frameNum, base64, matchId, mime: imgType })
     if (mountedRef.current) setQueueDepth(frameQueueRef.current.length)
   }
 
@@ -300,7 +336,7 @@ export default function Capture() {
         match_id: frame.matchId,
         frame_number: frame.frameNum,
         image_data: frame.base64,
-        image_mime_type: 'image/jpeg',
+        image_mime_type: frame.mime || 'image/jpeg',
         captured_at: new Date().toISOString()
       })
       if (result.success) {
@@ -469,7 +505,7 @@ export default function Capture() {
           <h2 className="text-sm font-bold uppercase tracking-wide" style={{ color: 'var(--ors-text-muted)' }}>Step 3 - Live Capture</h2>
         </div>
 
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-4 gap-4">
           {/* Capture FPS (preview smoothness) */}
           <div>
             <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--ors-text-muted)' }}>
@@ -494,6 +530,16 @@ export default function Capture() {
               {streaming ? (ocrBusy ? 'Processing...' : 'Waiting for frame') : 'Continuous (auto)'}
             </div>
           </div>
+          {/* Compact mode toggle */}
+          <div>
+            <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--ors-text-muted)' }}>
+              <Camera className="w-3 h-3 inline mr-1" />CAPTURE AREA
+            </label>
+            <select className="input" value={compactMode ? 'compact' : 'full'} onChange={e => setCompactMode(e.target.value === 'compact')} disabled={streaming}>
+              <option value="compact">HUD Only (top 55% — fastest)</option>
+              <option value="full">Full Screen (for results)</option>
+            </select>
+          </div>
 
           <div className="flex items-end">
             {!streaming ? (
@@ -512,14 +558,14 @@ export default function Capture() {
         {streaming && (
           <div className="text-xs p-2 rounded flex items-center justify-between" style={{ background: 'var(--ors-bg-input)', color: 'var(--ors-text-muted)' }}>
             <span>
-              Capturing at <span className="font-medium" style={{ color: 'var(--ors-accent)' }}>{captureFps} FPS</span> |
-              Queue: <span className="font-medium">{queueDepth}</span> pending
+              {captureFps} FPS | {compactMode ? 'HUD crop' : 'Full'} | {detectWebP() ? 'WebP' : 'JPEG'} 0.45
             </span>
             <span className="flex items-center gap-3">
               {ocrBusy && <span style={{ color: 'var(--ors-yellow)' }} className="flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-yellow-500 animate-pulse"></span> Gemini processing...
+                <span className="w-1.5 h-1.5 rounded-full bg-yellow-500 animate-pulse"></span> Gemini...
               </span>}
               {ocrLatency != null && <span>OCR: <span className="font-medium" style={{ color: ocrLatency > 5000 ? 'var(--ors-red)' : ocrLatency > 2000 ? 'var(--ors-yellow)' : 'var(--ors-accent)' }}>{(ocrLatency / 1000).toFixed(1)}s</span>/frame</span>}
+              <span>Q: <span className="font-medium">{queueDepth}</span></span>
               <span>Done: <span className="font-medium" style={{ color: 'var(--ors-accent)' }}>{processedCount}</span></span>
             </span>
           </div>
