@@ -49,6 +49,7 @@ export default function Capture() {
   const ocrFpsRef = useRef(1)
   const backendConnectedRef = useRef(true)
   const ocrLatencyRef = useRef(0)
+  const lastFrameHashRef = useRef(0)
   const mountedRef = useRef(true)
   const MAX_QUEUE = 5                     // Max frames in queue before dropping old ones
 
@@ -120,10 +121,12 @@ export default function Capture() {
       if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play() }
       await new Promise(r => setTimeout(r, 800))
       const video = videoRef.current, canvas = canvasRef.current
-      canvas.width = video.videoWidth || 1280; canvas.height = video.videoHeight || 720
+      const srcW = video.videoWidth || 1280
+      const srcH = video.videoHeight || 720
+      canvas.width = 854; canvas.height = 480
       const ctx = canvas.getContext('2d')
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-      const base64 = canvas.toDataURL('image/jpeg', 0.7).split(',')[1]
+      ctx.drawImage(video, 0, 0, srcW, srcH, 0, 0, 854, 480)
+      const base64 = canvas.toDataURL('image/jpeg', 0.5).split(',')[1]
       const result = await validateFrame(base64, 'image/jpeg')
       if (result.success) {
         setValidation({ detected: result.detected, confirmed: false })
@@ -198,11 +201,17 @@ export default function Capture() {
   function grabFrame() {
     if (!videoRef.current || !canvasRef.current || !streamRef.current) return
     const video = videoRef.current, canvas = canvasRef.current
-    canvas.width = video.videoWidth || 1280
-    canvas.height = video.videoHeight || 720
+    // Downscale to 854x480 — Gemini can still read HUD text
+    // This cuts payload size by ~60% vs full 1280x720
+    const targetW = 854, targetH = 480
+    const srcW = video.videoWidth || 1280
+    const srcH = video.videoHeight || 720
+    canvas.width = targetW
+    canvas.height = targetH
     const ctx = canvas.getContext('2d')
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-    const base64 = canvas.toDataURL('image/jpeg', 0.7).split(',')[1]
+    ctx.drawImage(video, 0, 0, srcW, srcH, 0, 0, targetW, targetH)
+    // JPEG quality 0.5 — game HUD text is high contrast, survives compression
+    const base64 = canvas.toDataURL('image/jpeg', 0.5).split(',')[1]
 
     frameCountRef.current += 1
     const frameNum = frameCountRef.current
@@ -268,6 +277,19 @@ export default function Capture() {
       if (mountedRef.current) setDroppedFrames(droppedRef.current)
     }
     if (mountedRef.current) setQueueDepth(0) // Queue is now empty
+
+    // Quick frame dedup: hash a sample of the base64 to detect identical frames
+    // If the frame hasn't changed since last OCR, skip the Gemini call entirely
+    const hash = frame.base64.length ^ frame.base64.charCodeAt(0) ^ frame.base64.charCodeAt(frame.base64.length >> 1) ^ frame.base64.charCodeAt(frame.base64.length - 1)
+    if (hash === lastFrameHashRef.current) {
+      if (mountedRef.current) setStatus(`Frame ${frame.frameNum} skipped (no change since last OCR)`)
+      // Immediately schedule next cycle
+      if (streamRef.current && mountedRef.current) {
+        ocrTimerRef.current = setTimeout(() => runOcrCycle(), 50)
+      }
+      return
+    }
+    lastFrameHashRef.current = hash
 
     isOcrRunningRef.current = true
     if (mountedRef.current) setOcrBusy(true)

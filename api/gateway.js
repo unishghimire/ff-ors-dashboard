@@ -70,19 +70,10 @@ function checkAuth(req) {
 // === OCR via Gemini ===
 async function runGeminiOCR(imageData, mimeType = 'image/jpeg') {
   if (!GOOGLE_API_KEY) throw new Error('GOOGLE_API_KEY not set');
-  const prompt = `You are a Free Fire esports observer/referee assistant. Analyze this game screenshot and extract data as JSON:
-{
-  "game_phase": "lobby" | "loading" | "in_game" | "results",
-  "map_name": "Bermuda" | "Purgatory" | "Kalahari" | "Alpine" | "Nexterra" or null,
-  "alive_count": number or null,
-  "total_players": number or null,
-  "zone_phase": "1" | "2" | "3" | "4" | "5" | "final" or null,
-  "kill_feed": [{"killer": "name", "victim": "name"}] or [],
-  "player_stats": [{"name": "name", "kills": number}] or [],
-  "placements": [{"name": "name", "placement": number}] or [],
-  "confidence": 0.0 to 1.0
-}
-Only include visible fields. Set null for not visible. Return ONLY valid JSON, no markdown.`;
+  // Shorter prompt = fewer input tokens = faster response
+  const prompt = `Free Fire screenshot. Extract as JSON only:
+{"game_phase":"lobby|loading|in_game|results","map_name":null,"alive_count":null,"total_players":null,"zone_phase":null,"kill_feed":[],"player_stats":[],"placements":[],"confidence":0.0}
+Set null for not visible. Kill feed: [{"killer":"","victim":""}]. Player stats: [{"name":"","kills":0}]. Placements only if results screen.`;
 
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent?key=${GOOGLE_API_KEY}`,
@@ -91,7 +82,7 @@ Only include visible fields. Set null for not visible. Return ONLY valid JSON, n
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mimeType, data: imageData } }] }],
-        generationConfig: { temperature: 0.1, maxOutputTokens: 2048 }
+        generationConfig: { temperature: 0.1, maxOutputTokens: 1024 }
       })
     }
   );
@@ -582,6 +573,7 @@ export default async function handler(req, res) {
 
       // === Capture + Process + Push (all-in-one) ===
       case 'capture_and_process': {
+        // 1. Create frame doc first (non-blocking — we don't wait for this to call Gemini)
         const frame = await createDoc(db, 'match_frames', {
           match_id: params.match_id, frame_number: params.frame_number || 0,
           captured_at: now(), image_url: params.image_url || '',
@@ -589,6 +581,8 @@ export default async function handler(req, res) {
         });
         try {
           if (!params.image_data) throw new Error('No image_data provided');
+
+          // 2. Gemini OCR (the big cost — 2-5s)
           const ocr = await runGeminiOCR(params.image_data, params.image_mime_type || 'image/jpeg');
           const confidence = ocr.confidence || 0;
           const normalized = {
@@ -597,59 +591,89 @@ export default async function handler(req, res) {
             zone_phase: ocr.zone_phase || null, kill_feed: ocr.kill_feed || [],
             player_stats: ocr.player_stats || [], placements: ocr.placements || [], confidence
           };
-          // Update participants
-          if (ocr.player_stats?.length) {
-            const players = await db.collection('players').get();
-            for (const s of ocr.player_stats) {
-              for (const p of players.docs) {
-                if (p.data().ign?.toLowerCase().includes(s.name?.toLowerCase())) {
-                  const parts = await db.collection('match_participants')
-                    .where('match_id', '==', params.match_id).get();
-                  parts.docs.forEach(d => {
-                    if (d.data().player_id === p.id) d.ref.update({ kills: s.kills || 0 });
-                  });
-                }
-              }
-            }
-          }
-          // Placements
-          if (ocr.placements?.length && ocr.game_phase === 'results') {
-            const teams = await db.collection('teams').get();
-            for (const p of ocr.placements) {
-              for (const t of teams.docs) {
-                if (t.data().name?.toLowerCase().includes(p.name?.toLowerCase())) {
-                  const parts = await db.collection('match_participants')
-                    .where('match_id', '==', params.match_id).get();
-                  parts.docs.forEach(d => {
-                    if (d.data().team_id === t.id) d.ref.update({ placement: p.placement });
-                  });
-                }
-              }
-            }
-          }
-          // Violations
-          const prevSnap = await db.collection('match_frames')
-            .where('match_id', '==', params.match_id).limit(50).get();
-          const prevDocs = snapData(prevSnap)
-            .filter(d => d.id !== frame.id)
-            .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
-            .slice(0, 1);
-          const violations = await checkViolations(db, params.match_id, frame.id, normalized, prevDocs[0]);
           const status = confidence >= 0.6 ? 'completed' : 'flagged';
+
+          // 3. Fetch previous frame + match_participants IN PARALLEL (was sequential)
+          const [prevSnap, partSnap] = await Promise.all([
+            db.collection('match_frames').where('match_id', '==', params.match_id)
+              .orderBy('created_at', 'desc').limit(2).get().catch(() => null),
+            db.collection('match_participants').where('match_id', '==', params.match_id).get()
+          ]);
+
+          // 4. Update frame doc with OCR results (single write, includes everything)
           await db.collection('match_frames').doc(frame.id).update({
             ocr_raw: ocr, ocr_confidence: confidence, normalized_data: normalized,
             game_phase: normalized.game_phase, processing_status: status, updated_at: now()
           });
-          // Push to destinations
-          const matchData = await buildMatchData(db, params.match_id);
-          const pushResults = await pushToDestinations(db, params.match_id, matchData);
-          const updatedFrame = (await db.collection('match_frames').doc(frame.id).get()).data();
+
+          // 5. Violations check (uses prevSnap — only 2 docs, not 50)
+          const prevDocs = prevSnap ? snapData(prevSnap).filter(d => d.id !== frame.id).slice(0, 1) : [];
+          const violations = await checkViolations(db, params.match_id, frame.id, normalized, prevDocs[0]);
+
+          // 6. Update participants — batch write, single fetch of match_participants
+          const participants = snapData(partSnap);
+          const batch = db.batch();
+          let batchUpdates = 0;
+
+          if (ocr.player_stats?.length) {
+            // Fetch players ONCE, not per stat
+            const playersSnap = await db.collection('players').get();
+            const players = snapData(playersSnap);
+            for (const s of ocr.player_stats) {
+              const matchedPlayer = players.find(p => p.ign?.toLowerCase().includes(s.name?.toLowerCase()));
+              if (matchedPlayer) {
+                const part = participants.find(p => p.player_id === matchedPlayer.id);
+                if (part) {
+                  batch.update(db.collection('match_participants').doc(part.id), { kills: s.kills || 0 });
+                  batchUpdates++;
+                }
+              }
+            }
+          }
+
+          // 7. Placements — only on results phase, reuse same participants data
+          if (ocr.placements?.length && ocr.game_phase === 'results') {
+            const teamsSnap = await db.collection('teams').get();
+            const teams = snapData(teamsSnap);
+            for (const p of ocr.placements) {
+              const matchedTeam = teams.find(t => t.name?.toLowerCase().includes(p.name?.toLowerCase()));
+              if (matchedTeam) {
+                const parts = participants.filter(part => part.team_id === matchedTeam.id);
+                for (const part of parts) {
+                  batch.update(db.collection('match_participants').doc(part.id), { placement: p.placement });
+                  batchUpdates++;
+                }
+              }
+            }
+          }
+
+          if (batchUpdates > 0) await batch.commit();
+
+          // 8. Push to destinations — fire and forget (don't block the response)
+          const matchData = {
+            match: { id: params.match_id },
+            current_state: {
+              alive_count: normalized.alive_count,
+              total_kills: (ocr.kill_feed || []).length
+            },
+            participants: participants.map(p => ({ ...p, kills: ocr.player_stats?.find(s =>
+              participants.find(pp => pp.player_id === p.player_id)?.ign?.toLowerCase().includes(s.name?.toLowerCase())
+            )?.kills ?? p.kills })),
+            total_kills: participants.reduce((s, p) => s + (p.kills || 0), 0),
+            pushed_at: now()
+          };
+          // Fire and forget — don't await
+          pushToDestinations(db, params.match_id, matchData).catch(() => {});
+
+          // 9. Return immediately — no final frame re-read
           return res.status(200).json({
-            success: true, frame_id: frame.id, frame: { id: frame.id, ...updatedFrame },
+            success: true, frame_id: frame.id,
+            frame: { id: frame.id, ocr_confidence: confidence, normalized_data: normalized,
+              game_phase: normalized.game_phase, processing_status: status, created_at: now() },
             ocr_confidence: confidence,
             game_phase: normalized.game_phase, alive_count: normalized.alive_count,
             zone_phase: normalized.zone_phase, violations: violations.length,
-            processing_status: status, push_results: pushResults
+            processing_status: status
           });
         } catch (e) {
           await db.collection('match_frames').doc(frame.id).update({ processing_status: 'failed', updated_at: now() });
