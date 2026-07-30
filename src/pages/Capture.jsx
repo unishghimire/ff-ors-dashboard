@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { listEntities, callFunction, validateFrame } from '../api/client'
 import { Radio, Play, Square, Camera, Activity, AlertCircle, Shield, CheckCircle, XCircle, Trophy, MapPin, Eye, Zap, Gauge, Cpu } from 'lucide-react'
 import { loadModels, extractHUD, shouldCallGemini, areModelsReady } from '../ml/hudReader'
+import { runOllamaOCR, runHuggingFaceOCR, checkOllama } from '../ml/freeVLM'
 
 // === Image Compression Settings ===
 // WebP is 25-35% smaller than JPEG at the same quality.
@@ -74,6 +75,9 @@ export default function Capture() {
   const [compactMode, setCompactMode] = useState(true)    // Crop to HUD area (top 55%)
   const [mlReady, setMlReady] = useState(false)            // TF.js models loaded
   const [mlEnabled, setMlEnabled] = useState(true)         // User toggle
+  const [vlmProvider, setVlmProvider] = useState('gemini')  // gemini | ollama | huggingface
+  const [ollamaStatus, setOllamaStatus] = useState(null)    // {available, models, error}
+  const [vlmLatency, setVlmLatency] = useState(null)
   const [mlLatency, setMlLatency] = useState(null)          // ML inference time (ms)
   const [geminiCalls, setGeminiCalls] = useState(0)        // How many Gemini calls made
   const [mlCalls, setMlCalls] = useState(0)                // How many ML-only frames
@@ -104,6 +108,7 @@ export default function Capture() {
   const lastFrameHashRef = useRef(0)
   const compactModeRef = useRef(true)
   const mlEnabledRef = useRef(true)
+  const vlmProviderRef = useRef('gemini')
   const prevAliveCountRef = useRef(null)
   const prevPhaseRef = useRef(null)
   const mlCanvasRef = useRef(null)    // separate canvas for ML inference
@@ -123,6 +128,14 @@ export default function Capture() {
   useEffect(() => { backendConnectedRef.current = backendConnected }, [backendConnected])
   useEffect(() => { compactModeRef.current = compactMode }, [compactMode])
   useEffect(() => { mlEnabledRef.current = mlEnabled }, [mlEnabled])
+  useEffect(() => { vlmProviderRef.current = vlmProvider }, [vlmProvider])
+
+  // Check if Ollama is running on mount + when provider changes to ollama
+  useEffect(() => {
+    if (vlmProvider === 'ollama') {
+      checkOllama().then(status => setOllamaStatus(status))
+    }
+  }, [vlmProvider])
 
   // Load TF.js models on mount (non-blocking — falls back to Gemini if unavailable)
   useEffect(() => {
@@ -530,7 +543,7 @@ export default function Capture() {
           <h2 className="text-sm font-bold uppercase tracking-wide" style={{ color: 'var(--ors-text-muted)' }}>Step 3 - Live Capture</h2>
         </div>
 
-        <div className="grid grid-cols-5 gap-4">
+        <div className="grid grid-cols-6 gap-4">
           {/* Capture FPS (preview smoothness) */}
           <div>
             <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--ors-text-muted)' }}>
@@ -571,8 +584,19 @@ export default function Capture() {
               <Cpu className="w-3 h-3 inline mr-1" />ML ENGINE
             </label>
             <select className="input" value={mlEnabled ? 'hybrid' : 'gemini'} onChange={e => setMlEnabled(e.target.value === 'hybrid')} disabled={streaming}>
-              <option value="hybrid">Hybrid (ML + Gemini) {mlReady ? '✅' : '— no model'}</option>
-              <option value="gemini">Gemini Only (fallback)</option>
+              <option value="hybrid">Hybrid (ML + VLM) {mlReady ? '✅' : '— no model'}</option>
+              <option value="gemini">VLM Only</option>
+            </select>
+          </div>
+          {/* VLM provider selection */}
+          <div>
+            <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--ors-text-muted)' }}>
+              <Radio className="w-3 h-3 inline mr-1" />VLM PROVIDER
+            </label>
+            <select className="input" value={vlmProvider} onChange={e => setVlmProvider(e.target.value)} disabled={streaming}>
+              <option value="gemini">Gemini (cloud — needs API key)</option>
+              <option value="ollama">Ollama (local — free) {ollamaStatus?.available ? '✅' : '⚠️'}</option>
+              <option value="huggingface">HuggingFace (cloud — free tier)</option>
             </select>
           </div>
 
@@ -593,7 +617,7 @@ export default function Capture() {
         {streaming && (
           <div className="text-xs p-2 rounded flex items-center justify-between" style={{ background: 'var(--ors-bg-input)', color: 'var(--ors-text-muted)' }}>
             <span>
-              {captureFps} FPS | {compactMode ? 'HUD crop' : 'Full'} | {detectWebP() ? 'WebP' : 'JPEG'} 0.45
+              {captureFps} FPS | {compactMode ? 'HUD crop' : 'Full'} | {detectWebP() ? 'WebP' : 'JPEG'} 0.45 | {vlmProvider.toUpperCase()}
             </span>
             <span className="flex items-center gap-3">
               {mlEnabled && mlReady && <>
