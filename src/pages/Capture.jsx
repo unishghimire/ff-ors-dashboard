@@ -25,6 +25,8 @@ export default function Capture() {
   const [backendConnected, setBackendConnected] = useState(true)
   const [pipelineErrors, setPipelineErrors] = useState(0)
   const [droppedFrames, setDroppedFrames] = useState(0)
+  const [ocrLatency, setOcrLatency] = useState(null)         // ms per Gemini call
+  const [ocrBusy, setOcrBusy] = useState(false)              // Gemini call in progress
 
   // === Pre-Capture Validation ===
   const [validating, setValidating] = useState(false)
@@ -46,8 +48,9 @@ export default function Capture() {
   const captureFpsRef = useRef(2)
   const ocrFpsRef = useRef(1)
   const backendConnectedRef = useRef(true)
+  const ocrLatencyRef = useRef(0)
   const mountedRef = useRef(true)
-  const MAX_QUEUE = 15                     // Max frames in queue before dropping old ones
+  const MAX_QUEUE = 5                     // Max frames in queue before dropping old ones
 
   useEffect(() => {
     mountedRef.current = true
@@ -177,7 +180,7 @@ export default function Capture() {
 
       // Start both loops
       scheduleNextCapture()
-      scheduleNextOcr()
+      startOcrLoop()
     } catch (e) { setError(`Screen capture failed: ${e.message}`); setStreaming(false) }
   }
 
@@ -226,26 +229,50 @@ export default function Capture() {
     if (mountedRef.current) setQueueDepth(frameQueueRef.current.length)
   }
 
-  // --- OCR LOOP (slow, rate-limited) ---
-  function scheduleNextOcr() {
+  // --- OCR LOOP (continuous, LIFO) ---
+  // Processes frames as fast as Gemini can respond.
+  // Uses LIFO: always processes the LATEST captured frame.
+  // Stale frames in the queue are discarded.
+  function startOcrLoop() {
     if (!streamRef.current || !mountedRef.current) return
-    const intervalMs = 1000 / ocrFpsRef.current
-    ocrTimerRef.current = setTimeout(async () => {
-      if (!streamRef.current || !mountedRef.current) return
-      await processNextFrame()
-      if (streamRef.current && mountedRef.current) scheduleNextOcr()
-    }, intervalMs)
+    // Small delay to let capture fill the queue first
+    ocrTimerRef.current = setTimeout(() => runOcrCycle(), 500)
   }
 
-  async function processNextFrame() {
-    if (isOcrRunningRef.current) return  // Don't overlap OCR calls
-    if (frameQueueRef.current.length === 0) return  // Nothing to process
-    if (!streamRef.current) return  // Stream stopped — don't process
+  async function runOcrCycle() {
+    if (!streamRef.current || !mountedRef.current) return
 
-    const frame = frameQueueRef.current.shift()
-    if (mountedRef.current) setQueueDepth(frameQueueRef.current.length)
+    // If Gemini is still busy, check again in 100ms
+    if (isOcrRunningRef.current) {
+      if (streamRef.current && mountedRef.current) {
+        ocrTimerRef.current = setTimeout(() => runOcrCycle(), 100)
+      }
+      return
+    }
+
+    // If queue is empty, wait 200ms and check again
+    if (frameQueueRef.current.length === 0) {
+      if (streamRef.current && mountedRef.current) {
+        ocrTimerRef.current = setTimeout(() => runOcrCycle(), 200)
+      }
+      return
+    }
+
+    // LIFO: take the LATEST frame (most current game state)
+    // Discard all older frames — they're stale
+    const queueLen = frameQueueRef.current.length
+    const frame = frameQueueRef.current.pop()
+    const discarded = queueLen - 1
+    if (discarded > 0) {
+      droppedRef.current += discarded
+      if (mountedRef.current) setDroppedFrames(droppedRef.current)
+    }
+    if (mountedRef.current) setQueueDepth(0) // Queue is now empty
 
     isOcrRunningRef.current = true
+    if (mountedRef.current) setOcrBusy(true)
+    const ocrStart = Date.now()
+
     try {
       const result = await callFunction('captureAndProcess', {
         match_id: frame.matchId,
@@ -256,16 +283,19 @@ export default function Capture() {
       })
       if (result.success) {
         processedCountRef.current += 1
-        if (mountedRef.current && (processedCountRef.current % 3 === 0 || processedCountRef.current === 1)) setProcessedCount(processedCountRef.current)
+        if (mountedRef.current) setProcessedCount(processedCountRef.current)
         const frameData = result.frame || {}
         const nd = frameData.normalized_data || {}
         const conf = nd.confidence || 0
+        const latency = Date.now() - ocrStart
+        ocrLatencyRef.current = latency
         if (mountedRef.current) {
           setLastConfidence(conf)
           setLastPhase(nd.game_phase || 'unknown')
+          setOcrLatency(latency)
         }
         const kills = (nd.kill_feed || []).length
-        if (mountedRef.current) setStatus(`Frame ${frame.frameNum} processed | Queue: ${frameQueueRef.current.length} | Phase: ${nd.game_phase || '?'} | Alive: ${nd.alive_count ?? '?'} | Kills: ${kills} | Conf: ${(conf * 100).toFixed(0)}%`)
+        if (mountedRef.current) setStatus(`Frame ${frame.frameNum} done | ${latency}ms | Queue: 0 | Phase: ${nd.game_phase || '?'} | Alive: ${nd.alive_count ?? '?'} | Kills: ${kills} | Conf: ${(conf * 100).toFixed(0)}%`)
       } else {
         if (mountedRef.current) setPipelineErrors(prev => prev + 1)
         if (mountedRef.current) setStatus(`Frame ${frame.frameNum}: ${result.error || 'processing failed'}`)
@@ -275,6 +305,11 @@ export default function Capture() {
       if (mountedRef.current) setStatus(`Frame ${frame.frameNum}: ${e.message}`)
     } finally {
       isOcrRunningRef.current = false
+      if (mountedRef.current) setOcrBusy(false)
+      // Immediately schedule next cycle — no artificial delay
+      if (streamRef.current && mountedRef.current) {
+        ocrTimerRef.current = setTimeout(() => runOcrCycle(), 50)
+      }
     }
   }
 
@@ -428,17 +463,14 @@ export default function Capture() {
             </select>
           </div>
 
-          {/* OCR FPS (data extraction rate) */}
+          {/* OCR Mode (continuous) */}
           <div>
             <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--ors-text-muted)' }}>
-              <Zap className="w-3 h-3 inline mr-1" />OCR RATE (Gemini)
+              <Zap className="w-3 h-3 inline mr-1" />OCR MODE
             </label>
-            <select className="input" value={ocrFps} onChange={e => setOcrFps(Number(e.target.value))} disabled={streaming}>
-              <option value={1}>1 FPS (Safe - Free Tier)</option>
-              <option value={2}>2 FPS</option>
-              <option value={3}>3 FPS</option>
-              <option value={5}>5 FPS (Needs Paid Tier)</option>
-            </select>
+            <div className="input flex items-center justify-center text-sm font-medium" style={{ color: 'var(--ors-accent)' }}>
+              {streaming ? (ocrBusy ? 'Processing...' : 'Waiting for frame') : 'Continuous (auto)'}
+            </div>
           </div>
 
           <div className="flex items-end">
@@ -456,10 +488,18 @@ export default function Capture() {
 
         {/* Rate info banner */}
         {streaming && (
-          <div className="text-xs p-2 rounded" style={{ background: 'var(--ors-bg-input)', color: 'var(--ors-text-muted)' }}>
-            Capturing at <span className="font-medium" style={{ color: 'var(--ors-accent)' }}>{captureFps} FPS</span> for preview |
-            Processing OCR at <span className="font-medium" style={{ color: 'var(--ors-accent)' }}>{ocrFps} FPS</span> via Gemini |
-            Queue: <span className="font-medium">{queueDepth}</span> frames pending
+          <div className="text-xs p-2 rounded flex items-center justify-between" style={{ background: 'var(--ors-bg-input)', color: 'var(--ors-text-muted)' }}>
+            <span>
+              Capturing at <span className="font-medium" style={{ color: 'var(--ors-accent)' }}>{captureFps} FPS</span> |
+              Queue: <span className="font-medium">{queueDepth}</span> pending
+            </span>
+            <span className="flex items-center gap-3">
+              {ocrBusy && <span style={{ color: 'var(--ors-yellow)' }} className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-yellow-500 animate-pulse"></span> Gemini processing...
+              </span>}
+              {ocrLatency != null && <span>OCR: <span className="font-medium" style={{ color: ocrLatency > 5000 ? 'var(--ors-red)' : ocrLatency > 2000 ? 'var(--ors-yellow)' : 'var(--ors-accent)' }}>{(ocrLatency / 1000).toFixed(1)}s</span>/frame</span>}
+              <span>Done: <span className="font-medium" style={{ color: 'var(--ors-accent)' }}>{processedCount}</span></span>
+            </span>
           </div>
         )}
 
@@ -510,8 +550,10 @@ export default function Capture() {
             <p className="text-2xl font-bold mt-1" style={{ color: 'var(--ors-accent)' }}>{processedCount}</p>
           </div>
           <div className="card p-4">
-            <p className="text-xs" style={{ color: 'var(--ors-text-muted)' }}>QUEUE DEPTH</p>
-            <p className="text-2xl font-bold mt-1" style={{ color: queueDepth > 10 ? 'var(--ors-red)' : queueDepth > 5 ? 'var(--ors-yellow)' : 'var(--ors-text)' }}>{queueDepth}</p>
+            <p className="text-xs" style={{ color: 'var(--ors-text-muted)' }}>OCR LATENCY</p>
+            <p className="text-2xl font-bold mt-1" style={{ color: ocrLatency > 5000 ? 'var(--ors-red)' : ocrLatency > 2000 ? 'var(--ors-yellow)' : 'var(--ors-text)' }}>
+              {ocrLatency != null ? `${(ocrLatency / 1000).toFixed(1)}s` : '-'}
+            </p>
           </div>
           <div className="card p-4">
             <p className="text-xs" style={{ color: 'var(--ors-text-muted)' }}>LAST CONFIDENCE</p>
