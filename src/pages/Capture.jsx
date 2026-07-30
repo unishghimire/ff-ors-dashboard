@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { listEntities, callFunction, validateFrame } from '../api/client'
-import { Radio, Play, Square, Camera, Activity, AlertCircle, Shield, CheckCircle, XCircle, Trophy, MapPin, Eye, Zap, Gauge } from 'lucide-react'
+import { Radio, Play, Square, Camera, Activity, AlertCircle, Shield, CheckCircle, XCircle, Trophy, MapPin, Eye, Zap, Gauge, Cpu } from 'lucide-react'
+import { loadModels, extractHUD, shouldCallGemini, areModelsReady } from '../ml/hudReader'
 
 // === Image Compression Settings ===
 // WebP is 25-35% smaller than JPEG at the same quality.
@@ -71,6 +72,11 @@ export default function Capture() {
   const [pipelineErrors, setPipelineErrors] = useState(0)
   const [droppedFrames, setDroppedFrames] = useState(0)
   const [compactMode, setCompactMode] = useState(true)    // Crop to HUD area (top 55%)
+  const [mlReady, setMlReady] = useState(false)            // TF.js models loaded
+  const [mlEnabled, setMlEnabled] = useState(true)         // User toggle
+  const [mlLatency, setMlLatency] = useState(null)          // ML inference time (ms)
+  const [geminiCalls, setGeminiCalls] = useState(0)        // How many Gemini calls made
+  const [mlCalls, setMlCalls] = useState(0)                // How many ML-only frames
   const [ocrLatency, setOcrLatency] = useState(null)         // ms per Gemini call
   const [ocrBusy, setOcrBusy] = useState(false)              // Gemini call in progress
 
@@ -97,6 +103,12 @@ export default function Capture() {
   const ocrLatencyRef = useRef(0)
   const lastFrameHashRef = useRef(0)
   const compactModeRef = useRef(true)
+  const mlEnabledRef = useRef(true)
+  const prevAliveCountRef = useRef(null)
+  const prevPhaseRef = useRef(null)
+  const mlCanvasRef = useRef(null)    // separate canvas for ML inference
+  const geminiCallsRef = useRef(0)
+  const mlCallsRef = useRef(0)
   const mountedRef = useRef(true)
   const MAX_QUEUE = 5                     // Max frames in queue before dropping old ones
 
@@ -110,6 +122,19 @@ export default function Capture() {
   useEffect(() => { ocrFpsRef.current = ocrFps }, [ocrFps])
   useEffect(() => { backendConnectedRef.current = backendConnected }, [backendConnected])
   useEffect(() => { compactModeRef.current = compactMode }, [compactMode])
+  useEffect(() => { mlEnabledRef.current = mlEnabled }, [mlEnabled])
+
+  // Load TF.js models on mount (non-blocking — falls back to Gemini if unavailable)
+  useEffect(() => {
+    loadModels().then(result => {
+      setMlReady(areModelsReady())
+      if (result.alive || result.phase) {
+        console.log('[ORS] ML models ready — hybrid mode active')
+      } else {
+        console.log('[ORS] No ML models found — using Gemini-only mode')
+      }
+    }).catch(() => setMlReady(false))
+  }, [])
 
   useEffect(() => {
     loadTournaments()
@@ -505,7 +530,7 @@ export default function Capture() {
           <h2 className="text-sm font-bold uppercase tracking-wide" style={{ color: 'var(--ors-text-muted)' }}>Step 3 - Live Capture</h2>
         </div>
 
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-5 gap-4">
           {/* Capture FPS (preview smoothness) */}
           <div>
             <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--ors-text-muted)' }}>
@@ -540,6 +565,16 @@ export default function Capture() {
               <option value="full">Full Screen (for results)</option>
             </select>
           </div>
+          {/* ML mode toggle */}
+          <div>
+            <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--ors-text-muted)' }}>
+              <Cpu className="w-3 h-3 inline mr-1" />ML ENGINE
+            </label>
+            <select className="input" value={mlEnabled ? 'hybrid' : 'gemini'} onChange={e => setMlEnabled(e.target.value === 'hybrid')} disabled={streaming}>
+              <option value="hybrid">Hybrid (ML + Gemini) {mlReady ? '✅' : '— no model'}</option>
+              <option value="gemini">Gemini Only (fallback)</option>
+            </select>
+          </div>
 
           <div className="flex items-end">
             {!streaming ? (
@@ -561,11 +596,16 @@ export default function Capture() {
               {captureFps} FPS | {compactMode ? 'HUD crop' : 'Full'} | {detectWebP() ? 'WebP' : 'JPEG'} 0.45
             </span>
             <span className="flex items-center gap-3">
+              {mlEnabled && mlReady && <>
+                <span style={{ color: 'var(--ors-accent)' }} className="flex items-center gap-1">
+                  <Cpu className="w-3 h-3" /> ML: <span className="font-medium">{mlLatency != null ? `${mlLatency}ms` : '—'}</span>
+                </span>
+                <span>ML: <span className="font-medium" style={{ color: 'var(--ors-accent)' }}>{mlCalls}</span> | Gemini: <span className="font-medium">{geminiCalls}</span></span>
+              </>}
               {ocrBusy && <span style={{ color: 'var(--ors-yellow)' }} className="flex items-center gap-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-yellow-500 animate-pulse"></span> Gemini...
               </span>}
-              {ocrLatency != null && <span>OCR: <span className="font-medium" style={{ color: ocrLatency > 5000 ? 'var(--ors-red)' : ocrLatency > 2000 ? 'var(--ors-yellow)' : 'var(--ors-accent)' }}>{(ocrLatency / 1000).toFixed(1)}s</span>/frame</span>}
-              <span>Q: <span className="font-medium">{queueDepth}</span></span>
+              {ocrLatency != null && <span>OCR: <span className="font-medium" style={{ color: ocrLatency > 5000 ? 'var(--ors-red)' : ocrLatency > 2000 ? 'var(--ors-yellow)' : 'var(--ors-accent)' }}>{ocrLatency < 100 ? `${ocrLatency}ms` : `${(ocrLatency / 1000).toFixed(1)}s`}</span>/frame</span>}
               <span>Done: <span className="font-medium" style={{ color: 'var(--ors-accent)' }}>{processedCount}</span></span>
             </span>
           </div>
